@@ -1,6 +1,6 @@
 [project]
 name = "parro-cli"
-version = "0.1.0"
+version = "0.2.0"
 description = "Command-line interface for the Parro school communication platform"
 requires-python = ">=3.11"
 license = "MIT"
@@ -9,10 +9,18 @@ dependencies = [
     "httpx>=0.27",
     "rich>=13.0",
     "python-dotenv>=1.0",
+    "click>=8.1",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
 
 [project.scripts]
 parro = "parro.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/anneschuth/parro-cli"
+Repository = "https://github.com/anneschuth/parro-cli"
 
 [build-system]
 requires = ["hatchling"]

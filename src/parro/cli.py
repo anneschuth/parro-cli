@@ -10,16 +10,18 @@ Usage:
     parro unread                         # Show unread counts
     parro calendar                       # Show calendar iCal URLs
     parro account                        # Show account info
+    parro open REF                       # Open attachment by number or URL
+    parro completion SHELL               # Output shell completion script
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 from datetime import datetime
 from pathlib import Path
 
+import click
 import httpx
 
 from rich.console import Console
@@ -77,87 +79,8 @@ def _identity_name(identity: dict) -> str:
     return name or "Onbekend"
 
 
-def cmd_login(args):
-    """Authenticate via headless OAuth2 flow."""
-    import os
-
-    from dotenv import load_dotenv
-
-    from .client import TOKEN_PATH
-
-    # Load .env files: ~/.config/parro/.env first, then local .env
-    load_dotenv(TOKEN_PATH.parent / ".env")
-    load_dotenv()  # local .env
-
-    username = args.username or os.environ.get("PARRO_USERNAME", "")
-    password = args.password or os.environ.get("PARRO_PASSWORD", "")
-
-    try:
-        tokens = ParroAuth.login(username=username or None, password=password or None)
-        console.print("[green]Login geslaagd![/]")
-        # Show account info
-        with ParroClient(tokens["access_token"]) as client:
-            account = client.get_account()
-            email = account.get("email", "")
-            console.print(f"  Email: {email}")
-    except Exception as e:
-        console.print(f"[red]Login mislukt: {e}[/]")
-        sys.exit(1)
-
-
-def cmd_logout(args):
-    """Remove stored tokens."""
-    from .client import TOKEN_PATH
-
-    if TOKEN_PATH.exists():
-        TOKEN_PATH.unlink()
-        console.print("[green]Uitgelogd.[/]")
-    else:
-        console.print("[dim]Je was al uitgelogd.[/]")
-
-
-def cmd_account(args):
-    """Show account info."""
-    with ParroClient() as client:
-        account = client.get_account()
-        if args.json:
-            print(json.dumps(account, indent=2, default=str))
-            return
-        console.print(Panel(
-            f"Email: {account.get('email', '')}\n"
-            f"Username: {account.get('externalUsername', '')}\n"
-            f"ID: {_link_id(account)}",
-            title="[bold]Parro Account[/]",
-            border_style="blue",
-        ))
-
-
-def cmd_announcements(args):
-    """Show announcements."""
-    with ParroClient() as client:
-        if args.group:
-            # Single group
-            items = client.get_announcements(group_id=args.group)
-            _print_announcements(items[:args.limit], args)
-        else:
-            # All groups — fetch per group so we can show the group name
-            groups = client.get_groups()
-            all_items = []
-            for group in groups:
-                gid = _link_id(group)
-                gname = group.get("name", "")
-                items = client.get_announcements(group_id=gid)
-                for item in items:
-                    item["_group_name"] = gname
-                all_items.extend(items)
-
-            # Sort by date
-            all_items.sort(key=lambda a: a.get("sortDate", ""))
-            _print_announcements(all_items[-args.limit:], args)
-
-
-def _print_announcements(items: list[dict], args):
-    if args.json:
+def _print_announcements(items: list[dict], as_json: bool):
+    if as_json:
         print(json.dumps(items, indent=2, default=str))
         return
 
@@ -219,12 +142,121 @@ def _print_announcements(items: list[dict], args):
         _save_attachment_urls(_last_attachment_urls)
 
 
-def cmd_chatrooms(args):
-    """List chat rooms."""
+class AliasedGroup(click.Group):
+    """Click group that handles errors gracefully."""
+    pass
+
+
+@click.group(cls=AliasedGroup)
+@click.option("--json", "as_json", is_flag=True, default=False, help="Output als JSON")
+@click.version_option(version="0.2.0", prog_name="parro")
+@click.pass_context
+def cli(ctx, as_json):
+    """Parro CLI - toegang tot het Parro schoolplatform vanuit de terminal."""
+    ctx.ensure_object(dict)
+    ctx.obj["json"] = as_json
+
+
+@cli.command()
+@click.option("-u", "--username", default=None, help="Email (of PARRO_USERNAME env)")
+@click.option("-p", "--password", default=None, help="Wachtwoord (of PARRO_PASSWORD env)")
+def login(username, password):
+    """Inloggen bij Parro via headless OAuth2 flow."""
+    import os
+
+    from dotenv import load_dotenv
+
+    from .client import TOKEN_PATH
+
+    # Load .env files: ~/.config/parro/.env first, then local .env
+    load_dotenv(TOKEN_PATH.parent / ".env")
+    load_dotenv()  # local .env
+
+    username = username or os.environ.get("PARRO_USERNAME", "")
+    password = password or os.environ.get("PARRO_PASSWORD", "")
+
+    try:
+        tokens = ParroAuth.login(username=username or None, password=password or None)
+        console.print("[green]Login geslaagd![/]")
+        # Show account info
+        with ParroClient(tokens["access_token"]) as client:
+            account = client.get_account()
+            email = account.get("email", "")
+            console.print(f"  Email: {email}")
+    except Exception as e:
+        console.print(f"[red]Login mislukt: {e}[/]")
+        sys.exit(1)
+
+
+@cli.command()
+def logout():
+    """Uitloggen (tokens verwijderen)."""
+    from .client import TOKEN_PATH
+
+    if TOKEN_PATH.exists():
+        TOKEN_PATH.unlink()
+        console.print("[green]Uitgelogd.[/]")
+    else:
+        console.print("[dim]Je was al uitgelogd.[/]")
+
+
+@cli.command()
+@click.pass_context
+def account(ctx):
+    """Account info tonen."""
+    as_json = ctx.obj["json"]
+    with ParroClient() as client:
+        data = client.get_account()
+        if as_json:
+            print(json.dumps(data, indent=2, default=str))
+            return
+        console.print(Panel(
+            f"Email: {data.get('email', '')}\n"
+            f"Username: {data.get('externalUsername', '')}\n"
+            f"ID: {_link_id(data)}",
+            title="[bold]Parro Account[/]",
+            border_style="blue",
+        ))
+
+
+@cli.command()
+@click.option("--limit", default=20, type=int, help="Maximum aantal mededelingen")
+@click.option("--group", default=None, type=int, help="Filter op groep ID")
+@click.pass_context
+def announcements(ctx, limit, group):
+    """Mededelingen ophalen."""
+    as_json = ctx.obj["json"]
+    with ParroClient() as client:
+        if group:
+            # Single group
+            items = client.get_announcements(group_id=group)
+            _print_announcements(items[:limit], as_json)
+        else:
+            # All groups - fetch per group so we can show the group name
+            groups = client.get_groups()
+            all_items = []
+            for g in groups:
+                gid = _link_id(g)
+                gname = g.get("name", "")
+                items = client.get_announcements(group_id=gid)
+                for item in items:
+                    item["_group_name"] = gname
+                all_items.extend(items)
+
+            # Sort by date
+            all_items.sort(key=lambda a: a.get("sortDate", ""))
+            _print_announcements(all_items[-limit:], as_json)
+
+
+@cli.command()
+@click.pass_context
+def chatrooms(ctx):
+    """Chatrooms tonen, gesorteerd op activiteit."""
+    as_json = ctx.obj["json"]
     with ParroClient() as client:
         items = client.get_chatrooms()
 
-        if args.json:
+        if as_json:
             print(json.dumps(items, indent=2, default=str))
             return
 
@@ -254,20 +286,25 @@ def cmd_chatrooms(args):
         console.print(table)
 
 
-def cmd_messages(args):
-    """Show messages in a chatroom."""
+@cli.command()
+@click.argument("chatroom_id", type=int)
+@click.option("--limit", default=50, type=int, help="Maximum aantal berichten")
+@click.pass_context
+def messages(ctx, chatroom_id, limit):
+    """Berichten in een chatroom tonen."""
+    as_json = ctx.obj["json"]
     with ParroClient() as client:
-        items = client.get_chat_messages(args.chatroom_id)
+        items = client.get_chat_messages(chatroom_id)
 
-        if args.json:
-            print(json.dumps(items[:args.limit], indent=2, default=str))
+        if as_json:
+            print(json.dumps(items[:limit], indent=2, default=str))
             return
 
         if not items:
             console.print("[dim]Geen berichten gevonden[/]")
             return
 
-        for msg in reversed(items[:args.limit]):
+        for msg in reversed(items[:limit]):
             identity = msg.get("identity", {})
             sender = _identity_name(identity)
             text = msg.get("text", msg.get("contents", ""))
@@ -280,87 +317,15 @@ def cmd_messages(args):
             console.print(f"  [dim]{created}[/] [bold]{sender}:[/] {text}")
 
 
-def cmd_children(args):
-    """List children."""
-    with ParroClient() as client:
-        items = client.get_children()
+@click.command("open")
+@click.argument("ref", type=str)
+def open_attachment(ref):
+    """Open een bijlage in Preview/standaard app.
 
-        if args.json:
-            print(json.dumps(items, indent=2, default=str))
-            return
-
-        if not items:
-            console.print("[dim]Geen kinderen gevonden[/]")
-            return
-
-        for child in items:
-            name = _identity_name(child)
-            child_id = _link_id(child)
-            if name:
-                console.print(f"  [bold]{name}[/] (ID: {child_id})")
-
-
-def cmd_groups(args):
-    """List groups."""
-    with ParroClient() as client:
-        items = client.get_groups()
-
-        if args.json:
-            print(json.dumps(items, indent=2, default=str))
-            return
-
-        if not items:
-            console.print("[dim]Geen groepen gevonden[/]")
-            return
-
-        table = Table(title="Groepen")
-        table.add_column("ID", style="dim")
-        table.add_column("Naam", style="bold")
-        table.add_column("Type", style="cyan")
-        table.add_column("Ongelezen", style="red")
-        table.add_column("Leerlingen", style="green")
-
-        for group in items:
-            gid = str(_link_id(group) or "")
-            name = group.get("name", "")
-            gtype = group.get("type", "")
-            unread = str(group.get("unreadCount", 0))
-            children = str(group.get("numberOfChildren", 0))
-            table.add_row(gid, name, gtype, unread, children)
-
-        console.print(table)
-
-
-def cmd_unread(args):
-    """Show unread counts."""
-    with ParroClient() as client:
-        items = client.get_unread_counts()
-
-        if args.json:
-            print(json.dumps(items, indent=2, default=str))
-            return
-
-        for item in items:
-            ann = item.get("numberOfUnreadAnnouncements", 0)
-            cal = item.get("numberOfUnreadCalendarItems", 0)
-            chat = item.get("numberOfUnreadChatRooms", 0)
-            news = item.get("numberOfUnreadSystemNewsItems", 0)
-
-            console.print(f"  Mededelingen: [bold]{ann}[/] ongelezen")
-            console.print(f"  Kalender:     [bold]{cal}[/] ongelezen")
-            console.print(f"  Chatrooms:    [bold]{chat}[/] ongelezen")
-            console.print(f"  Parro nieuws: [bold]{news}[/] ongelezen")
-
-
-def cmd_open(args):
-    """Download and open an attachment in the default app.
-
-    Accepts a URL or a number from the last `parro announcements` output.
+    REF is een nummer (uit announcements output) of een URL.
     """
     import subprocess
     import tempfile
-
-    ref = args.ref
 
     # Check if it's a number referencing a previous attachment
     if ref.isdigit():
@@ -389,12 +354,100 @@ def cmd_open(args):
     subprocess.run(["open", str(tmp)])
 
 
-def cmd_calendar(args):
-    """Show calendar iCal URLs."""
+# Register the "open" command
+cli.add_command(open_attachment)
+
+
+@cli.command()
+@click.pass_context
+def children(ctx):
+    """Kinderen tonen."""
+    as_json = ctx.obj["json"]
+    with ParroClient() as client:
+        items = client.get_children()
+
+        if as_json:
+            print(json.dumps(items, indent=2, default=str))
+            return
+
+        if not items:
+            console.print("[dim]Geen kinderen gevonden[/]")
+            return
+
+        for child in items:
+            name = _identity_name(child)
+            child_id = _link_id(child)
+            if name:
+                console.print(f"  [bold]{name}[/] (ID: {child_id})")
+
+
+@cli.command()
+@click.pass_context
+def groups(ctx):
+    """Groepen tonen."""
+    as_json = ctx.obj["json"]
+    with ParroClient() as client:
+        items = client.get_groups()
+
+        if as_json:
+            print(json.dumps(items, indent=2, default=str))
+            return
+
+        if not items:
+            console.print("[dim]Geen groepen gevonden[/]")
+            return
+
+        table = Table(title="Groepen")
+        table.add_column("ID", style="dim")
+        table.add_column("Naam", style="bold")
+        table.add_column("Type", style="cyan")
+        table.add_column("Ongelezen", style="red")
+        table.add_column("Leerlingen", style="green")
+
+        for g in items:
+            gid = str(_link_id(g) or "")
+            name = g.get("name", "")
+            gtype = g.get("type", "")
+            unread = str(g.get("unreadCount", 0))
+            children_count = str(g.get("numberOfChildren", 0))
+            table.add_row(gid, name, gtype, unread, children_count)
+
+        console.print(table)
+
+
+@cli.command()
+@click.pass_context
+def unread(ctx):
+    """Ongelezen aantallen tonen."""
+    as_json = ctx.obj["json"]
+    with ParroClient() as client:
+        items = client.get_unread_counts()
+
+        if as_json:
+            print(json.dumps(items, indent=2, default=str))
+            return
+
+        for item in items:
+            ann = item.get("numberOfUnreadAnnouncements", 0)
+            cal = item.get("numberOfUnreadCalendarItems", 0)
+            chat = item.get("numberOfUnreadChatRooms", 0)
+            news = item.get("numberOfUnreadSystemNewsItems", 0)
+
+            console.print(f"  Mededelingen: [bold]{ann}[/] ongelezen")
+            console.print(f"  Kalender:     [bold]{cal}[/] ongelezen")
+            console.print(f"  Chatrooms:    [bold]{chat}[/] ongelezen")
+            console.print(f"  Parro nieuws: [bold]{news}[/] ongelezen")
+
+
+@cli.command()
+@click.pass_context
+def calendar(ctx):
+    """Kalender iCal URLs tonen."""
+    as_json = ctx.obj["json"]
     with ParroClient() as client:
         urls = client.get_calendar_urls()
 
-        if args.json:
+        if as_json:
             print(json.dumps(urls, indent=2))
             return
 
@@ -406,56 +459,39 @@ def cmd_calendar(args):
             console.print(f"  [link={url}]{url}[/link]")
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Parro CLI - toegang tot het Parro schoolplatform vanuit de terminal",
-    )
-    parser.add_argument("--json", action="store_true", help="Output als JSON")
+@cli.command()
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
+def completion(shell):
+    """Output shell completion script.
 
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    Add to your shell config to enable tab completion:
 
-    login_parser = subparsers.add_parser("login", help="Inloggen bij Parro")
-    login_parser.add_argument("-u", "--username", help="Email (of PARRO_USERNAME env)")
-    login_parser.add_argument("-p", "--password", help="Wachtwoord (of PARRO_PASSWORD env)")
-    subparsers.add_parser("logout", help="Uitloggen (tokens verwijderen)")
-    subparsers.add_parser("account", help="Account info tonen")
+    \b
+      # bash (~/.bashrc)
+      eval "$(parro completion bash)"
 
-    ann_parser = subparsers.add_parser("announcements", help="Mededelingen ophalen")
-    ann_parser.add_argument("--limit", type=int, default=20)
-    ann_parser.add_argument("--group", type=int, help="Filter op groep ID")
+    \b
+      # zsh (~/.zshrc)
+      eval "$(parro completion zsh)"
 
-    subparsers.add_parser("chatrooms", help="Chatrooms tonen")
+    \b
+      # fish (~/.config/fish/completions/parro.fish)
+      parro completion fish > ~/.config/fish/completions/parro.fish
+    """
+    import os
 
-    msg_parser = subparsers.add_parser("messages", help="Berichten in een chatroom")
-    msg_parser.add_argument("chatroom_id", type=int)
-    msg_parser.add_argument("--limit", type=int, default=50)
-
-    open_parser = subparsers.add_parser("open", help="Open een bijlage in Preview/standaard app")
-    open_parser.add_argument("ref", help="Nummer (uit announcements) of URL")
-
-    subparsers.add_parser("children", help="Kinderen tonen")
-    subparsers.add_parser("groups", help="Groepen tonen")
-    subparsers.add_parser("unread", help="Ongelezen aantallen")
-    subparsers.add_parser("calendar", help="Kalender iCal URLs")
-
-    args = parser.parse_args()
-
-    commands = {
-        "login": cmd_login,
-        "logout": cmd_logout,
-        "account": cmd_account,
-        "announcements": cmd_announcements,
-        "chatrooms": cmd_chatrooms,
-        "messages": cmd_messages,
-        "open": cmd_open,
-        "children": cmd_children,
-        "groups": cmd_groups,
-        "unread": cmd_unread,
-        "calendar": cmd_calendar,
-    }
-
+    os.environ["_PARRO_COMPLETE"] = f"{shell}_source"
     try:
-        commands[args.command](args)
+        cli.main(standalone_mode=False)
+    except SystemExit:
+        pass
+    finally:
+        del os.environ["_PARRO_COMPLETE"]
+
+
+def main():
+    try:
+        cli(standalone_mode=True)
     except RuntimeError as e:
         console.print(f"[red]{e}[/]")
         sys.exit(1)
