@@ -38,6 +38,17 @@ def _link_id(item: dict, rel: str = "self") -> int | None:
     return None
 
 
+def _fmt_date(iso: str) -> str:
+    """Format ISO datetime to readable Dutch format."""
+    if not iso:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso)
+        return dt.strftime("%-d %b %H:%M")
+    except (ValueError, TypeError):
+        return iso[:16]
+
+
 def _identity_name(identity: dict) -> str:
     """Extract display name from an identity object."""
     name = identity.get("displayName", "")
@@ -118,10 +129,10 @@ def cmd_announcements(args):
             console.print("[dim]Geen mededelingen gevonden[/]")
             return
 
-        for ann in items[:args.limit]:
+        for ann in reversed(items[:args.limit]):
             title = ann.get("title", "(geen titel)")
             contents = ann.get("contents", "")
-            created = ann.get("createdAt", "")[:16]
+            created = _fmt_date(ann.get("createdAt", ""))
             read = ann.get("read", False)
             owner = ann.get("owner", {})
             owner_name = _identity_name(owner)
@@ -158,14 +169,20 @@ def cmd_chatrooms(args):
         table.add_column("ID", style="dim")
         table.add_column("Naam", style="bold")
         table.add_column("Type", style="cyan")
+        table.add_column("Laatste", style="dim")
         table.add_column("Ongelezen", style="red")
 
-        for room in items:
+        # Sort by most recent activity
+        sorted_items = sorted(
+            items, key=lambda r: r.get("sortDate", ""), reverse=True
+        )
+        for room in sorted_items:
             room_id = str(_link_id(room) or "")
             name = room.get("title", room.get("subject", room.get("name", "")))
             room_type = room.get("type", "")
+            last = _fmt_date(room.get("sortDate", ""))
             unread = str(room.get("unreadCount", 0))
-            table.add_row(room_id, name, room_type, unread)
+            table.add_row(room_id, name, room_type, last, unread)
 
         console.print(table)
 
@@ -187,13 +204,13 @@ def cmd_messages(args):
             identity = msg.get("identity", {})
             sender = _identity_name(identity)
             text = msg.get("text", msg.get("contents", ""))
-            created = msg.get("lastModifiedAt", "")[:16]
+            created = _fmt_date(msg.get("lastModifiedAt", ""))
             dtype = msg.get("dtype", "")
 
-            if "Text" in dtype:
-                console.print(f"  [dim]{created}[/] [bold]{sender}:[/] {text}")
-            else:
-                console.print(f"  [dim]{created}[/] [bold]{sender}:[/] [{dtype}]")
+            if not text:
+                text = "[dim]\\[media][/dim]"
+
+            console.print(f"  [dim]{created}[/] [bold]{sender}:[/] {text}")
 
 
 def cmd_children(args):
