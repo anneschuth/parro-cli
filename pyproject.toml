@@ -1,0 +1,21 @@
+[project]
+name = "parro-cli"
+version = "0.1.0"
+description = "Command-line interface for the Parro school communication platform"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Anne Schuth" }]
+dependencies = [
+    "httpx>=0.27",
+    "rich>=13.0",
+]
+
+[project.scripts]
+parro = "parro.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/parro"]
