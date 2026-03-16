@@ -119,37 +119,63 @@ def cmd_account(args):
 def cmd_announcements(args):
     """Show announcements."""
     with ParroClient() as client:
-        items = client.get_announcements()
+        if args.group:
+            # Single group
+            items = client.get_announcements(group_id=args.group)
+            _print_announcements(items[:args.limit], args)
+        else:
+            # All groups — fetch per group so we can show the group name
+            groups = client.get_groups()
+            all_items = []
+            for group in groups:
+                gid = _link_id(group)
+                gname = group.get("name", "")
+                items = client.get_announcements(group_id=gid)
+                for item in items:
+                    item["_group_name"] = gname
+                all_items.extend(items)
 
-        if args.json:
-            print(json.dumps(items[:args.limit], indent=2, default=str))
-            return
+            # Sort by date
+            all_items.sort(key=lambda a: a.get("sortDate", ""))
+            _print_announcements(all_items[-args.limit:], args)
 
-        if not items:
-            console.print("[dim]Geen mededelingen gevonden[/]")
-            return
 
-        for ann in reversed(items[:args.limit]):
-            title = ann.get("title", "(geen titel)")
-            contents = ann.get("contents", "")
-            created = _fmt_date(ann.get("createdAt", ""))
-            read = ann.get("read", False)
-            owner = ann.get("owner", {})
-            owner_name = _identity_name(owner)
-            attachments = ann.get("attachments", [])
+def _print_announcements(items: list[dict], args):
+    if args.json:
+        print(json.dumps(items, indent=2, default=str))
+        return
 
-            read_icon = "[dim]●[/]" if read else "[bold red]●[/]"
-            header = f"{read_icon} [bold]{title}[/]"
-            meta = f"Van: {owner_name} | {created}"
-            if attachments:
-                meta += f" | {len(attachments)} bijlage(n)"
+    if not items:
+        console.print("[dim]Geen mededelingen gevonden[/]")
+        return
 
-            console.print(Panel(
-                f"{meta}\n\n{contents[:500]}",
-                title=header,
-                border_style="blue" if read else "red",
-            ))
-            console.print()
+    for ann in items:
+        title = ann.get("title", "(geen titel)")
+        contents = ann.get("contents", "")
+        created = _fmt_date(ann.get("createdAt", ""))
+        read = ann.get("read", False)
+        owner = ann.get("owner", {})
+        owner_name = _identity_name(owner)
+        attachments = ann.get("attachments", [])
+        group_name = ann.get("_group_name", "")
+
+        read_icon = "[dim]●[/]" if read else "[bold red]●[/]"
+        header = f"{read_icon} [bold]{title}[/]"
+        meta_parts = []
+        if group_name:
+            meta_parts.append(f"[cyan]{group_name}[/cyan]")
+        meta_parts.append(f"Van: {owner_name}")
+        meta_parts.append(created)
+        if attachments:
+            meta_parts.append(f"{len(attachments)} bijlage(n)")
+        meta = " | ".join(meta_parts)
+
+        console.print(Panel(
+            f"{meta}\n\n{contents[:500]}",
+            title=header,
+            border_style="blue" if read else "red",
+        ))
+        console.print()
 
 
 def cmd_chatrooms(args):
@@ -318,6 +344,7 @@ def main():
 
     ann_parser = subparsers.add_parser("announcements", help="Mededelingen ophalen")
     ann_parser.add_argument("--limit", type=int, default=20)
+    ann_parser.add_argument("--group", type=int, help="Filter op groep ID")
 
     subparsers.add_parser("chatrooms", help="Chatrooms tonen")
 
