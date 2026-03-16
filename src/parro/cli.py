@@ -44,7 +44,7 @@ def _fmt_date(iso: str) -> str:
         return ""
     try:
         dt = datetime.fromisoformat(iso)
-        return dt.strftime("%-d %b %H:%M")
+        return dt.strftime("%d %b %H:%M")
     except (ValueError, TypeError):
         return iso[:16]
 
