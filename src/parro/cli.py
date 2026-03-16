@@ -170,8 +170,26 @@ def _print_announcements(items: list[dict], args):
             meta_parts.append(f"{len(attachments)} bijlage(n)")
         meta = " | ".join(meta_parts)
 
+        # Build attachment links
+        att_lines = ""
+        for att in attachments:
+            atype = att.get("attachmentType", "").lower()
+            icon = {"image": "img", "pdf": "pdf", "document": "doc"}.get(atype, "file")
+            for entry in att.get("entries", []):
+                url = entry.get("url", "")
+                size = entry.get("size", 0)
+                etype = entry.get("type", "")
+                if url and etype == "SOURCE":
+                    size_str = f" ({size // 1024}KB)" if size else ""
+                    att_lines += f"\n  [{icon}] [link={url}]{url.split('/')[-1]}[/link]{size_str}"
+                    break
+
+        body = f"{meta}\n\n{contents[:500]}"
+        if att_lines:
+            body += f"\n{att_lines}"
+
         console.print(Panel(
-            f"{meta}\n\n{contents[:500]}",
+            body,
             title=header,
             border_style="blue" if read else "red",
         ))
