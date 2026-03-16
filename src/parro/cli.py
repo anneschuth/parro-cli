@@ -18,6 +18,9 @@ import argparse
 import json
 import sys
 from datetime import datetime
+from pathlib import Path
+
+import httpx
 
 from rich.console import Console
 from rich.table import Table
@@ -48,10 +51,28 @@ def _identity_name(identity: dict) -> str:
 
 
 def cmd_login(args):
-    """Authenticate via browser OAuth2 flow."""
-    console.print("[bold]Opening browser for Parro login...[/]")
+    """Authenticate via headless OAuth2 flow."""
+    import os
+
+    username = args.username or os.environ.get("PARRO_USERNAME", "")
+    password = args.password or os.environ.get("PARRO_PASSWORD", "")
+
+    # Try .env file
+    env_file = Path(".env")
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            val = val.strip().strip("\"'")
+            if key.strip() == "PARRO_USERNAME" and not username:
+                username = val
+            elif key.strip() == "PARRO_PASSWORD" and not password:
+                password = val
+
     try:
-        tokens = ParroAuth.login()
+        tokens = ParroAuth.login(username=username or None, password=password or None)
         console.print("[green]Login geslaagd![/]")
         # Show account info
         with ParroClient(tokens["access_token"]) as client:
@@ -267,7 +288,9 @@ def main():
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("login", help="Inloggen via de browser")
+    login_parser = subparsers.add_parser("login", help="Inloggen bij Parro")
+    login_parser.add_argument("-u", "--username", help="Email (of PARRO_USERNAME env)")
+    login_parser.add_argument("-p", "--password", help="Wachtwoord (of PARRO_PASSWORD env)")
     subparsers.add_parser("account", help="Account info tonen")
 
     ann_parser = subparsers.add_parser("announcements", help="Mededelingen ophalen")

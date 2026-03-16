@@ -1,20 +1,19 @@
 """Parro API client - real implementation using rest-v2.parro.com.
 
 Authentication uses OAuth2 authorization code flow with PKCE via
-inloggen.parnassys.net. Tokens are stored locally and refreshed
-automatically.
+inloggen.parnassys.net. The login flow is done headlessly via httpx
+(no browser needed). Tokens are stored locally and refreshed automatically.
 """
 
 from __future__ import annotations
 
 import base64
+import getpass
 import hashlib
-import http.server
 import json
+import re
 import secrets
-import threading
-import webbrowser
-from datetime import datetime
+import urllib.parse
 from pathlib import Path
 
 import httpx
@@ -28,7 +27,6 @@ AUTHORIZE_URL = f"{IDP_BASE}/idp/oauth2/authorize"
 TOKEN_URL = f"{IDP_BASE}/idp/oauth2/token"
 CLIENT_ID = "W52dbSBQuFp-LF4Xch1r"
 REDIRECT_URI = "parro://oauth2"
-LOCAL_CALLBACK = "http://localhost:18923/callback"
 
 # Token storage
 TOKEN_PATH = Path("~/.config/parro/tokens.json").expanduser()
@@ -61,163 +59,170 @@ class ParroAuth:
     """Handle OAuth2 authentication for Parro."""
 
     @staticmethod
-    def login() -> dict:
-        """Run the OAuth2 authorization code flow with PKCE.
+    def login(username: str | None = None, password: str | None = None) -> dict:
+        """Log in to Parro via headless OAuth2 flow.
 
-        Opens a browser for the user to log in. After login, the IDP
-        redirects to parro://oauth2?code=..., which doesn't work on
-        desktop. We serve a local page that captures the code via JS
-        before the redirect completes.
+        Performs the full authorization code + PKCE flow by:
+        1. Starting the OAuth authorize request
+        2. Posting credentials to the IDP login form
+        3. Following redirects until we get the auth code
+        4. Exchanging the code for tokens
 
-        Returns the token response dict.
+        No browser needed.
         """
+        if not username:
+            username = input("Parro email: ")
+        if not password:
+            password = getpass.getpass("Parro wachtwoord: ")
+
         verifier, challenge = _generate_pkce()
         state = secrets.token_urlsafe(32)
 
-        import urllib.parse
+        auth_params = {
+            "client_id": CLIENT_ID,
+            "redirect_uri": REDIRECT_URI,
+            "response_type": "code",
+            "scope": "openid",
+            "state": state,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+        }
 
-        auth_params = urllib.parse.urlencode(
-            {
-                "client_id": CLIENT_ID,
-                "redirect_uri": REDIRECT_URI,
-                "response_type": "code",
-                "scope": "openid",
-                "state": state,
-                "code_challenge": challenge,
-                "code_challenge_method": "S256",
-            }
-        )
-        auth_url = f"{AUTHORIZE_URL}?{auth_params}"
-
-        result: dict = {}
-
-        # HTML page that opens the OAuth flow in an iframe from the
-        # IDP domain, then the user logs in. After login the IDP
-        # redirects to parro://oauth2?code=... We can't intercept
-        # that in the browser, so we ask the user to paste the URL.
-        # But better: we serve a page that does the flow and captures
-        # the code via a popup that we control.
-        login_page = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Parro Login</title>
-<style>
-  body {{ font-family: -apple-system, system-ui, sans-serif;
-         max-width: 600px; margin: 60px auto; padding: 20px;
-         background: #fdf2f8; color: #1a1a1a; }}
-  h1 {{ color: #e8436e; }}
-  .url-input {{ width: 100%; padding: 12px; font-size: 14px;
-                border: 2px solid #e8436e; border-radius: 8px;
-                margin: 10px 0; }}
-  button {{ background: #e8436e; color: white; border: none;
-            padding: 12px 24px; border-radius: 8px; cursor: pointer;
-            font-size: 16px; }}
-  button:hover {{ background: #d63361; }}
-  .step {{ margin: 20px 0; padding: 15px; background: white;
-           border-radius: 8px; border-left: 4px solid #e8436e; }}
-  .success {{ background: #dcfce7; border-left-color: #22c55e; }}
-  #status {{ margin-top: 20px; }}
-</style></head><body>
-<h1>Parro Login</h1>
-<div class="step">
-  <strong>Stap 1:</strong> Klik om in te loggen bij Parro
-  <br><br>
-  <a href="{auth_url}" target="_blank">
-    <button>Inloggen bij Parro</button>
-  </a>
-</div>
-<div class="step">
-  <strong>Stap 2:</strong> Na het inloggen probeert de browser
-  <code>parro://oauth2?code=...</code> te openen. Dit lukt niet.
-  <br><br>
-  Kopieer de <strong>volledige URL</strong> uit de adresbalk
-  (begint met <code>parro://oauth2</code>) en plak hier:
-  <br><br>
-  <input type="text" id="url" class="url-input"
-         placeholder="parro://oauth2?code=...&state=...">
-  <br>
-  <button onclick="submitCode()">Verstuur</button>
-</div>
-<div id="status"></div>
-<script>
-function submitCode() {{
-  const url = document.getElementById('url').value;
-  const params = new URLSearchParams(url.split('?')[1] || '');
-  const code = params.get('code');
-  if (!code) {{
-    document.getElementById('status').innerHTML =
-      '<div class="step" style="border-left-color:red">Geen code gevonden in de URL</div>';
-    return;
-  }}
-  fetch('/callback?code=' + encodeURIComponent(code) + '&state=' + encodeURIComponent(params.get('state') || ''))
-    .then(r => r.text())
-    .then(t => {{
-      document.getElementById('status').innerHTML =
-        '<div class="step success"><strong>Gelukt!</strong> Je bent ingelogd. Dit venster mag dicht.</div>';
-    }})
-    .catch(e => {{
-      document.getElementById('status').innerHTML =
-        '<div class="step" style="border-left-color:red">Fout: ' + e + '</div>';
-    }});
-}}
-// Auto-detect if opened via parro:// redirect (won't work but try)
-window.addEventListener('hashchange', function() {{
-  const hash = window.location.hash;
-  if (hash.includes('code=')) submitCode();
-}});
-</script></body></html>"""
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
-                parsed = urllib.parse.urlparse(self.path)
-
-                if parsed.path == "/callback":
-                    qs = urllib.parse.parse_qs(parsed.query)
-                    if "code" in qs:
-                        result["code"] = qs["code"][0]
-                        self.send_response(200)
-                        self.send_header("Content-Type", "text/plain")
-                        self.end_headers()
-                        self.wfile.write(b"OK")
-                        threading.Thread(
-                            target=self.server.shutdown, daemon=True
-                        ).start()
-                        return
-
-                # Serve the login page
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(login_page.encode())
-
-            def log_message(self, *args):
-                pass
-
-        server = http.server.HTTPServer(("localhost", 18923), Handler)
-        webbrowser.open("http://localhost:18923")
-        server.serve_forever()
-
-        if "code" not in result:
-            raise RuntimeError("Login geannuleerd of mislukt.")
-
-        # Exchange code for tokens
-        token_resp = httpx.post(
-            TOKEN_URL,
-            data={
-                "grant_type": "authorization_code",
-                "client_id": CLIENT_ID,
-                "code": result["code"],
-                "redirect_uri": REDIRECT_URI,
-                "code_verifier": verifier,
-            },
+        with httpx.Client(
+            follow_redirects=False,
             timeout=30,
-        )
-        token_resp.raise_for_status()
-        tokens = token_resp.json()
+            headers={"User-Agent": "Mozilla/5.0 (Macintosh) Parro-CLI/0.1"},
+        ) as client:
+            # Step 1: Hit the authorize endpoint — get redirected to login page
+            resp = client.get(AUTHORIZE_URL, params=auth_params)
 
-        if "access_token" not in tokens:
-            raise RuntimeError(f"Token exchange mislukt: {tokens}")
+            # Follow redirects manually (to collect cookies)
+            while resp.status_code in (301, 302, 303, 307, 308):
+                location = resp.headers["location"]
+                if not location.startswith("http"):
+                    location = f"{IDP_BASE}{location}"
+                resp = client.get(location)
 
-        _save_tokens(tokens)
-        return tokens
+            # Step 2: We should now be on the login page.
+            # Find the login form action URL and any hidden fields.
+            html = resp.text
+            action_match = re.search(
+                r'<form[^>]*action="([^"]*)"', html, re.IGNORECASE
+            )
+            if not action_match:
+                raise RuntimeError(
+                    "Kon het login formulier niet vinden. "
+                    "Mogelijk is de IDP interface veranderd."
+                )
+
+            form_action = action_match.group(1).replace("&amp;", "&")
+            if form_action.startswith("./"):
+                # Relative to current page path
+                base_path = str(resp.url).split("?")[0]
+                if not base_path.endswith("/"):
+                    base_path = base_path.rsplit("/", 1)[0] + "/"
+                form_action = base_path + form_action[2:]
+            elif not form_action.startswith("http"):
+                form_action = f"{IDP_BASE}{form_action}"
+
+            # Extract hidden form fields
+            form_data = {}
+            for match in re.finditer(
+                r'<input[^>]*type="hidden"[^>]*name="([^"]*)"[^>]*value="([^"]*)"',
+                html,
+                re.IGNORECASE,
+            ):
+                form_data[match.group(1)] = match.group(2)
+
+            # Also check reverse order (value before name)
+            for match in re.finditer(
+                r'<input[^>]*value="([^"]*)"[^>]*type="hidden"[^>]*name="([^"]*)"',
+                html,
+                re.IGNORECASE,
+            ):
+                form_data[match.group(2)] = match.group(1)
+
+            # Add credentials — ParnaSys uses Dutch field names
+            form_data["e-mailadres"] = username
+            form_data["wachtwoord"] = password
+            # Wicket requires the submit button name to be present
+            form_data["aanmelden"] = "x"
+
+            # Step 3: Submit the login form
+            resp = client.post(
+                form_action,
+                data=form_data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+
+            # Step 4: Follow redirects until we hit parro://oauth2?code=...
+            max_redirects = 20
+            for _ in range(max_redirects):
+                if resp.status_code not in (301, 302, 303, 307, 308):
+                    # Check if we're on an error page
+                    if "error" in resp.text.lower() and "password" in resp.text.lower():
+                        raise RuntimeError(
+                            "Login mislukt: onjuist wachtwoord of gebruikersnaam."
+                        )
+                    # Maybe there's a "choose application" page
+                    if "kies_applicatie" in resp.url.path:
+                        # Click on Parro — find the link
+                        parro_match = re.search(
+                            r'href="([^"]*)"[^>]*>.*?Parro',
+                            resp.text,
+                            re.IGNORECASE | re.DOTALL,
+                        )
+                        if parro_match:
+                            link = parro_match.group(1)
+                            if not link.startswith("http"):
+                                link = f"{IDP_BASE}{link}"
+                            resp = client.get(link)
+                            continue
+                    break
+
+                location = resp.headers.get("location", "")
+
+                # Check for the parro:// redirect with code
+                if location.startswith("parro://"):
+                    qs = urllib.parse.parse_qs(
+                        urllib.parse.urlparse(location).query
+                    )
+                    if "code" in qs:
+                        code = qs["code"][0]
+                        # Exchange for tokens
+                        token_resp = client.post(
+                            TOKEN_URL,
+                            data={
+                                "grant_type": "authorization_code",
+                                "client_id": CLIENT_ID,
+                                "code": code,
+                                "redirect_uri": REDIRECT_URI,
+                                "code_verifier": verifier,
+                            },
+                        )
+                        token_resp.raise_for_status()
+                        tokens = token_resp.json()
+                        if "access_token" not in tokens:
+                            raise RuntimeError(
+                                f"Token exchange mislukt: {tokens}"
+                            )
+                        _save_tokens(tokens)
+                        return tokens
+
+                    if "error" in qs:
+                        raise RuntimeError(
+                            f"Login mislukt: {qs.get('error_description', qs['error'])}"
+                        )
+
+                # Follow the redirect
+                if not location.startswith("http"):
+                    location = f"{IDP_BASE}{location}"
+                resp = client.get(location)
+
+            raise RuntimeError(
+                "Login mislukt: kon geen authorization code verkrijgen. "
+                "Controleer je inloggegevens."
+            )
 
     @staticmethod
     def refresh(refresh_token: str) -> dict:
@@ -244,10 +249,8 @@ window.addEventListener('hashchange', function() {{
         if not tokens:
             return None
 
-        # Try the access token first
         access_token = tokens.get("access_token", "")
         if access_token:
-            # Quick validation: try /account/me
             try:
                 resp = httpx.get(
                     f"{REST_API}/account/me",
@@ -259,7 +262,6 @@ window.addEventListener('hashchange', function() {{
             except httpx.HTTPError:
                 pass
 
-        # Try refresh
         refresh_token = tokens.get("refresh_token", "")
         if refresh_token:
             try:
@@ -340,6 +342,3 @@ class ParroClient:
 
     def get_unread_counts(self) -> list[dict]:
         return self._items("/identity/unreadcounts")
-
-    def get_absence_setting(self) -> dict:
-        return self._get("/absence/setting")
