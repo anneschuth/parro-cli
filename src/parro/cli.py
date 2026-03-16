@@ -329,6 +329,26 @@ def cmd_unread(args):
             console.print(f"  Parro nieuws: [bold]{news}[/] ongelezen")
 
 
+def cmd_open(args):
+    """Download and open an attachment URL in the default app."""
+    import subprocess
+    import tempfile
+
+    url = args.url
+    filename = url.split("/")[-1].split("?")[0]
+
+    console.print(f"  Downloaden: {filename}...", end="")
+    resp = httpx.get(url, timeout=30, follow_redirects=True)
+    resp.raise_for_status()
+
+    suffix = "." + filename.rsplit(".", 1)[-1] if "." in filename else ""
+    tmp = Path(tempfile.gettempdir()) / f"parro-{filename}"
+    tmp.write_bytes(resp.content)
+
+    console.print(f" [green]ok[/green] ({len(resp.content) // 1024}KB)")
+    subprocess.run(["open", str(tmp)])
+
+
 def cmd_calendar(args):
     """Show calendar iCal URLs."""
     with ParroClient() as client:
@@ -370,6 +390,9 @@ def main():
     msg_parser.add_argument("chatroom_id", type=int)
     msg_parser.add_argument("--limit", type=int, default=50)
 
+    open_parser = subparsers.add_parser("open", help="Open een bijlage URL in Preview/standaard app")
+    open_parser.add_argument("url", help="CloudFront URL van de bijlage")
+
     subparsers.add_parser("children", help="Kinderen tonen")
     subparsers.add_parser("groups", help="Groepen tonen")
     subparsers.add_parser("unread", help="Ongelezen aantallen")
@@ -384,6 +407,7 @@ def main():
         "announcements": cmd_announcements,
         "chatrooms": cmd_chatrooms,
         "messages": cmd_messages,
+        "open": cmd_open,
         "children": cmd_children,
         "groups": cmd_groups,
         "unread": cmd_unread,
