@@ -183,7 +183,7 @@ def cmd_messages(args):
             console.print("[dim]Geen berichten gevonden[/]")
             return
 
-        for msg in items[:args.limit]:
+        for msg in reversed(items[:args.limit]):
             identity = msg.get("identity", {})
             sender = _identity_name(identity)
             text = msg.get("text", msg.get("contents", ""))
