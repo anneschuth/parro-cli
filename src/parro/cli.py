@@ -54,22 +54,16 @@ def cmd_login(args):
     """Authenticate via headless OAuth2 flow."""
     import os
 
+    from dotenv import load_dotenv
+
+    from .client import TOKEN_PATH
+
+    # Load .env files: ~/.config/parro/.env first, then local .env
+    load_dotenv(TOKEN_PATH.parent / ".env")
+    load_dotenv()  # local .env
+
     username = args.username or os.environ.get("PARRO_USERNAME", "")
     password = args.password or os.environ.get("PARRO_PASSWORD", "")
-
-    # Try .env file
-    env_file = Path(".env")
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            line = line.strip()
-            if line.startswith("#") or "=" not in line:
-                continue
-            key, _, val = line.partition("=")
-            val = val.strip().strip("\"'")
-            if key.strip() == "PARRO_USERNAME" and not username:
-                username = val
-            elif key.strip() == "PARRO_PASSWORD" and not password:
-                password = val
 
     try:
         tokens = ParroAuth.login(username=username or None, password=password or None)
@@ -82,6 +76,17 @@ def cmd_login(args):
     except Exception as e:
         console.print(f"[red]Login mislukt: {e}[/]")
         sys.exit(1)
+
+
+def cmd_logout(args):
+    """Remove stored tokens."""
+    from .client import TOKEN_PATH
+
+    if TOKEN_PATH.exists():
+        TOKEN_PATH.unlink()
+        console.print("[green]Uitgelogd.[/]")
+    else:
+        console.print("[dim]Je was al uitgelogd.[/]")
 
 
 def cmd_account(args):
@@ -291,6 +296,7 @@ def main():
     login_parser = subparsers.add_parser("login", help="Inloggen bij Parro")
     login_parser.add_argument("-u", "--username", help="Email (of PARRO_USERNAME env)")
     login_parser.add_argument("-p", "--password", help="Wachtwoord (of PARRO_PASSWORD env)")
+    subparsers.add_parser("logout", help="Uitloggen (tokens verwijderen)")
     subparsers.add_parser("account", help="Account info tonen")
 
     ann_parser = subparsers.add_parser("announcements", help="Mededelingen ophalen")
@@ -311,6 +317,7 @@ def main():
 
     commands = {
         "login": cmd_login,
+        "logout": cmd_logout,
         "account": cmd_account,
         "announcements": cmd_announcements,
         "chatrooms": cmd_chatrooms,
