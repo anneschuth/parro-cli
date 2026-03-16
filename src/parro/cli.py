@@ -38,6 +38,79 @@ def _link_id(item: dict, rel: str = "self") -> int | None:
     return None
 
 
+_open_server_port: int | None = None
+
+
+def _ensure_open_server() -> int:
+    """Start a background HTTP server that downloads and opens attachments."""
+    import http.server
+    import subprocess
+    import tempfile
+    import threading
+    import socket
+
+    global _open_server_port
+    if _open_server_port is not None:
+        return _open_server_port
+
+    # Find free port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("localhost", 0))
+        port = s.getsockname()[1]
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            import urllib.parse as up
+            qs = up.parse_qs(up.urlparse(self.path).query)
+            url = qs.get("url", [""])[0]
+            if not url:
+                self.send_response(400)
+                self.end_headers()
+                return
+
+            # Download the file
+            try:
+                resp = httpx.get(url, timeout=30, follow_redirects=True)
+                resp.raise_for_status()
+                filename = url.split("/")[-1].split("?")[0]
+                tmp = Path(tempfile.gettempdir()) / f"parro-{filename}"
+                tmp.write_bytes(resp.content)
+                subprocess.Popen(["open", str(tmp)])
+
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(
+                    b"<html><body><script>window.close()</script>"
+                    b"<p>Geopend! Je kunt dit tabblad sluiten.</p></body></html>"
+                )
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(str(e).encode())
+
+        def log_message(self, *args):
+            pass
+
+    class _Server(http.server.HTTPServer):
+        allow_reuse_address = True
+
+    server = _Server(("localhost", port), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    _open_server_port = port
+    return port
+
+
+def _att_link(url: str, label: str) -> str:
+    """Create a terminal-clickable link that downloads and opens in Preview."""
+    port = _ensure_open_server()
+    import urllib.parse
+    local_url = f"http://localhost:{port}/open?url={urllib.parse.quote(url)}"
+    return f"[link={local_url}]{label}[/link]"
+
+
 def _fmt_date(iso: str) -> str:
     """Format ISO datetime to readable Dutch format."""
     if not iso:
@@ -170,7 +243,7 @@ def _print_announcements(items: list[dict], args):
             meta_parts.append(f"{len(attachments)} bijlage(n)")
         meta = " | ".join(meta_parts)
 
-        # Build attachment links
+        # Build attachment links (clickable — opens in Preview)
         att_lines = ""
         for att in attachments:
             atype = att.get("attachmentType", "").lower()
@@ -181,7 +254,9 @@ def _print_announcements(items: list[dict], args):
                 etype = entry.get("type", "")
                 if url and etype == "SOURCE":
                     size_str = f" ({size // 1024}KB)" if size else ""
-                    att_lines += f"\n  [{icon}] [link={url}]{url.split('/')[-1]}[/link]{size_str}"
+                    filename = url.split("/")[-1]
+                    link = _att_link(url, filename)
+                    att_lines += f"\n  [{icon}] {link}{size_str}"
                     break
 
         body = f"{meta}\n\n{contents[:500]}"
