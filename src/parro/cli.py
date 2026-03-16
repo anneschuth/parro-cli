@@ -38,77 +38,20 @@ def _link_id(item: dict, rel: str = "self") -> int | None:
     return None
 
 
-_open_server_port: int | None = None
+_last_attachment_urls: list[str] = []
+_LAST_URLS_PATH = Path("~/.config/parro/.last_attachments").expanduser()
 
 
-def _ensure_open_server() -> int:
-    """Start a background HTTP server that downloads and opens attachments."""
-    import http.server
-    import subprocess
-    import tempfile
-    import threading
-    import socket
-
-    global _open_server_port
-    if _open_server_port is not None:
-        return _open_server_port
-
-    # Find free port
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("localhost", 0))
-        port = s.getsockname()[1]
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            import urllib.parse as up
-            qs = up.parse_qs(up.urlparse(self.path).query)
-            url = qs.get("url", [""])[0]
-            if not url:
-                self.send_response(400)
-                self.end_headers()
-                return
-
-            # Download the file
-            try:
-                resp = httpx.get(url, timeout=30, follow_redirects=True)
-                resp.raise_for_status()
-                filename = url.split("/")[-1].split("?")[0]
-                tmp = Path(tempfile.gettempdir()) / f"parro-{filename}"
-                tmp.write_bytes(resp.content)
-                subprocess.Popen(["open", str(tmp)])
-
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html")
-                self.end_headers()
-                self.wfile.write(
-                    b"<html><body><script>window.close()</script>"
-                    b"<p>Geopend! Je kunt dit tabblad sluiten.</p></body></html>"
-                )
-            except Exception as e:
-                self.send_response(500)
-                self.send_header("Content-Type", "text/plain")
-                self.end_headers()
-                self.wfile.write(str(e).encode())
-
-        def log_message(self, *args):
-            pass
-
-    class _Server(http.server.HTTPServer):
-        allow_reuse_address = True
-
-    server = _Server(("localhost", port), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    _open_server_port = port
-    return port
+def _save_attachment_urls(urls: list[str]) -> None:
+    """Save attachment URLs so `parro open <n>` can use them."""
+    _LAST_URLS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _LAST_URLS_PATH.write_text("\n".join(urls))
 
 
-def _att_link(url: str, label: str) -> str:
-    """Create a terminal-clickable link that downloads and opens in Preview."""
-    port = _ensure_open_server()
-    import urllib.parse
-    local_url = f"http://localhost:{port}/open?url={urllib.parse.quote(url)}"
-    return f"[link={local_url}]{label}[/link]"
+def _load_attachment_urls() -> list[str]:
+    if _LAST_URLS_PATH.exists():
+        return [u for u in _LAST_URLS_PATH.read_text().splitlines() if u]
+    return []
 
 
 def _fmt_date(iso: str) -> str:
@@ -243,7 +186,7 @@ def _print_announcements(items: list[dict], args):
             meta_parts.append(f"{len(attachments)} bijlage(n)")
         meta = " | ".join(meta_parts)
 
-        # Build attachment links (clickable — opens in Preview)
+        # Build attachment links with index numbers
         att_lines = ""
         for att in attachments:
             atype = att.get("attachmentType", "").lower()
@@ -253,10 +196,11 @@ def _print_announcements(items: list[dict], args):
                 size = entry.get("size", 0)
                 etype = entry.get("type", "")
                 if url and etype == "SOURCE":
+                    _last_attachment_urls.append(url)
+                    idx = len(_last_attachment_urls)
                     size_str = f" ({size // 1024}KB)" if size else ""
                     filename = url.split("/")[-1]
-                    link = _att_link(url, filename)
-                    att_lines += f"\n  [{icon}] {link}{size_str}"
+                    att_lines += f"\n  [dim]\\[{idx}][/dim] [{icon}] [link={url}]{filename}[/link]{size_str}"
                     break
 
         body = f"{meta}\n\n{contents[:500]}"
@@ -269,6 +213,10 @@ def _print_announcements(items: list[dict], args):
             border_style="blue" if read else "red",
         ))
         console.print()
+
+    # Save attachment URLs for `parro open <n>`
+    if _last_attachment_urls:
+        _save_attachment_urls(_last_attachment_urls)
 
 
 def cmd_chatrooms(args):
@@ -405,18 +353,35 @@ def cmd_unread(args):
 
 
 def cmd_open(args):
-    """Download and open an attachment URL in the default app."""
+    """Download and open an attachment in the default app.
+
+    Accepts a URL or a number from the last `parro announcements` output.
+    """
     import subprocess
     import tempfile
 
-    url = args.url
+    ref = args.ref
+
+    # Check if it's a number referencing a previous attachment
+    if ref.isdigit():
+        idx = int(ref)
+        urls = _load_attachment_urls()
+        if not urls:
+            console.print("[red]Geen bijlages gevonden. Run eerst `parro announcements`.[/]")
+            sys.exit(1)
+        if idx < 1 or idx > len(urls):
+            console.print(f"[red]Nummer {idx} bestaat niet. Beschikbaar: 1-{len(urls)}[/]")
+            sys.exit(1)
+        url = urls[idx - 1]
+    else:
+        url = ref
+
     filename = url.split("/")[-1].split("?")[0]
 
     console.print(f"  Downloaden: {filename}...", end="")
     resp = httpx.get(url, timeout=30, follow_redirects=True)
     resp.raise_for_status()
 
-    suffix = "." + filename.rsplit(".", 1)[-1] if "." in filename else ""
     tmp = Path(tempfile.gettempdir()) / f"parro-{filename}"
     tmp.write_bytes(resp.content)
 
@@ -465,8 +430,8 @@ def main():
     msg_parser.add_argument("chatroom_id", type=int)
     msg_parser.add_argument("--limit", type=int, default=50)
 
-    open_parser = subparsers.add_parser("open", help="Open een bijlage URL in Preview/standaard app")
-    open_parser.add_argument("url", help="CloudFront URL van de bijlage")
+    open_parser = subparsers.add_parser("open", help="Open een bijlage in Preview/standaard app")
+    open_parser.add_argument("ref", help="Nummer (uit announcements) of URL")
 
     subparsers.add_parser("children", help="Kinderen tonen")
     subparsers.add_parser("groups", help="Groepen tonen")
