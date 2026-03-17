@@ -1,19 +1,32 @@
 [project]
-name = "parro-cli"
-version = "0.2.0"
+name = "parro"
+version = "0.3.0"
 description = "Command-line interface for the Parro school communication platform"
+readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{ name = "Anne Schuth" }]
+keywords = ["parro", "school", "cli", "parent-communication"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications",
+]
 dependencies = [
     "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+cli = [
     "rich>=13.0",
     "python-dotenv>=1.0",
     "click>=8.1",
 ]
-
-[project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["parro[cli]", "pytest>=8.0", "pre-commit>=4.0"]
 
 [project.scripts]
 parro = "parro.cli:main"
@@ -21,6 +34,7 @@ parro = "parro.cli:main"
 [project.urls]
 Homepage = "https://github.com/anneschuth/parro-cli"
 Repository = "https://github.com/anneschuth/parro-cli"
+Issues = "https://github.com/anneschuth/parro-cli/issues"
 
 [build-system]
 requires = ["hatchling"]
@@ -28,3 +42,29 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/parro"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 99
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["parro"]
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+version_variables = ["src/parro/cli.py:__version__"]
+branch = "main"
+build_command = "uv build"
+commit_message = "chore(release): {version}"
+tag_format = "v{version}"
+
+[tool.semantic_release.changelog]
+changelog_file = "CHANGELOG.md"
+
+[tool.semantic_release.commit_parser_options]
+allowed_tags = ["feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore"]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf"]

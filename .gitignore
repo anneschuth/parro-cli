@@ -4,5 +4,5 @@ __pycache__/
 dist/
 *.egg-info/
 .eggs/
-uv.lock
 .env
+.ruff_cache/
