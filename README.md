@@ -38,7 +38,7 @@ pip install parro[cli]
 uv tool install parro[cli]
 
 # CLI (met Homebrew)
-brew install anneschuth/parro/parro
+brew install anneschuth/tap/parro
 
 # Alleen SDK (geen rich/click)
 pip install parro
