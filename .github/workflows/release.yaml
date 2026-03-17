@@ -22,8 +22,8 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install semantic-release
-        run: pip install python-semantic-release
+      - name: Install tools
+        run: pip install python-semantic-release build
 
       - name: Semantic Release
         id: release
