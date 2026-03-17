@@ -1,17 +1,17 @@
 <h1 align="center">
-  📬 parro-cli
+  📬 parro
 </h1>
 
 <p align="center">
-  <strong>Parro in je terminal.</strong><br>
+  <em>A CLI and Python SDK for Parro, the Dutch school communication platform.</em><br>
   Mededelingen lezen, chatrooms volgen en bijlages openen — zonder de app te openen.
 </p>
 
 <p align="center">
-  <a href="https://github.com/anneschuth/parro-cli"><img alt="GitHub" src="https://img.shields.io/badge/github-anneschuth%2Fparro--cli-blue?logo=github"></a>
-  <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-3776ab?logo=python&logoColor=white">
-  <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-green">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.2.0-orange">
+  <a href="https://github.com/anneschuth/parro-cli/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/anneschuth/parro-cli/ci.yml?branch=main&label=CI"></a>
+  <a href="https://pypi.org/project/parro/"><img alt="PyPI" src="https://img.shields.io/pypi/v/parro"></a>
+  <a href="https://pypi.org/project/parro/"><img alt="Python" src="https://img.shields.io/pypi/pyversions/parro"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/anneschuth/parro-cli"></a>
 </p>
 
 ---
@@ -31,13 +31,22 @@ Authenticatie gaat via een headless OAuth2 flow — geen browser nodig.
 ## Installatie
 
 ```bash
-# Met uv (aanbevolen)
-uv tool install parro-cli
+# CLI (met pip)
+pip install parro[cli]
+
+# CLI (met uv, aanbevolen)
+uv tool install parro[cli]
+
+# CLI (met Homebrew)
+brew install anneschuth/parro/parro
+
+# Alleen SDK (geen rich/click)
+pip install parro
 
 # Vanuit source
 git clone https://github.com/anneschuth/parro-cli.git
 cd parro-cli
-uv tool install .
+uv tool install .[cli]
 ```
 
 ## Snel aan de slag
@@ -124,16 +133,38 @@ eval "$(parro completion zsh)"
 parro completion fish > ~/.config/fish/completions/parro.fish
 ```
 
+## SDK gebruik
+
+Het `parro` package kan ook als Python SDK gebruikt worden, zonder CLI-afhankelijkheden:
+
+```python
+from parro import ParroClient, ParroAuth, link_id, identity_name
+
+# Inloggen (eenmalig)
+tokens = ParroAuth.login("je@email.nl", "geheim")
+
+# API gebruiken
+with ParroClient(tokens["access_token"]) as client:
+    for ann in client.get_all_announcements(limit=5):
+        print(ann["title"], ann.get("_group_name", ""))
+
+    for child in client.get_children():
+        print(identity_name(child))
+```
+
 ## Development
 
 ```bash
 git clone https://github.com/anneschuth/parro-cli.git
 cd parro-cli
 uv sync --extra dev
+uv run pre-commit install
 uv run pytest
 uv run parro --help
 ```
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for more details.
+
 ## Licentie
 
-MIT
+MIT — see [LICENSE](LICENSE).
