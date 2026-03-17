@@ -33,7 +33,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uvx ty check
+      - run: uv sync --extra dev
+      - run: uv run ty check
 
   pre-commit:
     runs-on: ubuntu-latest
