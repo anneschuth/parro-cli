@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import base64
 import hashlib
-import tempfile
-from pathlib import Path
+import json
 from unittest.mock import patch
 
 import pytest
 
-from parro.client import _generate_pkce, _save_tokens, _load_tokens, ParroClient
+from parro.client import ParroClient, _generate_pkce, _load_tokens, _save_tokens
 
 
 class TestGeneratePkce:
@@ -86,22 +84,65 @@ class TestSaveLoadTokens:
             _save_tokens(tokens)
 
         # File should be readable only by owner (0o600)
-        import stat
         mode = token_file.stat().st_mode & 0o777
         assert mode == 0o600
+
+
+class TestGetAllAnnouncements:
+    def test_merges_and_sorts(self):
+        """get_all_announcements fetches groups, enriches with _group_name, sorts."""
+        groups = [
+            {"name": "Groep A", "links": [{"rel": "self", "id": 1}]},
+            {"name": "Groep B", "links": [{"rel": "self", "id": 2}]},
+        ]
+        ann_a = [{"title": "Old", "sortDate": "2024-01-01T00:00:00"}]
+        ann_b = [{"title": "New", "sortDate": "2024-06-01T00:00:00"}]
+
+        client = ParroClient.__new__(ParroClient)
+        with (
+            patch.object(client, "get_groups", return_value=groups),
+            patch.object(client, "get_announcements", side_effect=[ann_a, ann_b]),
+        ):
+            result = client.get_all_announcements()
+
+        assert len(result) == 2
+        assert result[0]["title"] == "Old"
+        assert result[0]["_group_name"] == "Groep A"
+        assert result[1]["title"] == "New"
+        assert result[1]["_group_name"] == "Groep B"
+
+    def test_limit(self):
+        """Limit returns only the last N items."""
+        groups = [{"name": "G", "links": [{"rel": "self", "id": 1}]}]
+        anns = [{"title": f"Ann {i}", "sortDate": f"2024-0{i}-01T00:00:00"} for i in range(1, 4)]
+
+        client = ParroClient.__new__(ParroClient)
+        with (
+            patch.object(client, "get_groups", return_value=groups),
+            patch.object(client, "get_announcements", return_value=anns),
+        ):
+            result = client.get_all_announcements(limit=2)
+
+        assert len(result) == 2
+        assert result[0]["title"] == "Ann 2"
+        assert result[1]["title"] == "Ann 3"
 
 
 class TestParroClientNotAuthenticated:
     def test_raises_when_no_token(self):
         """ParroClient should raise RuntimeError when used without auth."""
-        with patch("parro.client.ParroAuth.get_token", return_value=None):
-            with pytest.raises(RuntimeError, match="Not authenticated"):
-                with ParroClient() as client:
-                    pass
+        with (
+            patch("parro.client.ParroAuth.get_token", return_value=None),
+            pytest.raises(RuntimeError, match="Not authenticated"),
+            ParroClient(),
+        ):
+            pass
 
     def test_raises_with_message_about_login(self):
         """Error message should tell the user to run parro login."""
-        with patch("parro.client.ParroAuth.get_token", return_value=None):
-            with pytest.raises(RuntimeError, match="parro login"):
-                with ParroClient() as client:
-                    pass
+        with (
+            patch("parro.client.ParroAuth.get_token", return_value=None),
+            pytest.raises(RuntimeError, match="parro login"),
+            ParroClient(),
+        ):
+            pass

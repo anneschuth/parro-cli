@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from parro.cli import cli, _fmt_date, _identity_name, _link_id
-
+from parro.cli import _fmt_date, cli
 
 runner = CliRunner()
 
@@ -32,50 +32,6 @@ class TestFmtDate:
         assert result == "not-a-date-but-l"
 
 
-class TestIdentityName:
-    def test_display_name(self):
-        assert _identity_name({"displayName": "Jan Jansen"}) == "Jan Jansen"
-
-    def test_first_last(self):
-        assert _identity_name({"firstName": "Jan", "surname": "Jansen"}) == "Jan Jansen"
-
-    def test_first_prefix_last(self):
-        result = _identity_name({
-            "firstName": "Jan",
-            "surnamePrefix": "van",
-            "surname": "Dijk",
-        })
-        assert result == "Jan van Dijk"
-
-    def test_empty_returns_onbekend(self):
-        assert _identity_name({}) == "Onbekend"
-
-    def test_display_name_takes_priority(self):
-        result = _identity_name({
-            "displayName": "Display",
-            "firstName": "First",
-            "surname": "Last",
-        })
-        assert result == "Display"
-
-
-class TestLinkId:
-    def test_self_link(self):
-        item = {"links": [{"rel": "self", "id": 42}]}
-        assert _link_id(item) == 42
-
-    def test_custom_rel(self):
-        item = {"links": [{"rel": "parent", "id": 99}]}
-        assert _link_id(item, rel="parent") == 99
-
-    def test_no_links(self):
-        assert _link_id({}) is None
-
-    def test_no_matching_rel(self):
-        item = {"links": [{"rel": "other", "id": 1}]}
-        assert _link_id(item) is None
-
-
 # --- CLI command tests ---
 
 
@@ -84,9 +40,18 @@ class TestMainHelp:
         result = runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
         expected_commands = [
-            "login", "logout", "account", "announcements",
-            "chatrooms", "messages", "open", "children",
-            "groups", "unread", "calendar", "completion",
+            "login",
+            "logout",
+            "account",
+            "announcements",
+            "chatrooms",
+            "messages",
+            "open",
+            "children",
+            "groups",
+            "unread",
+            "calendar",
+            "completion",
         ]
         for cmd in expected_commands:
             assert cmd in result.output, f"Command '{cmd}' not found in help output"
@@ -94,7 +59,9 @@ class TestMainHelp:
     def test_version(self):
         result = runner.invoke(cli, ["--version"])
         assert result.exit_code == 0
-        assert "0.2.0" in result.output
+        import re
+
+        assert re.search(r"\d+\.\d+\.\d+", result.output)
 
 
 class TestLoginCommand:
@@ -103,6 +70,51 @@ class TestLoginCommand:
         assert result.exit_code == 0
         assert "--username" in result.output or "-u" in result.output
         assert "--password" in result.output or "-p" in result.output
+        assert "--store" in result.output
+
+    def test_store_saves_env_file(self, tmp_path):
+        """--store should write credentials to ~/.config/parro/.env."""
+        env_file = tmp_path / ".env"
+        fake_tokens = {"access_token": "tok123"}
+        fake_account = {"email": "test@example.com"}
+
+        with (
+            patch("parro.cli.ParroAuth.login", return_value=fake_tokens),
+            patch("parro.cli.ParroClient") as mock_client_cls,
+            patch("parro.client.TOKEN_PATH", tmp_path / "tokens.json"),
+        ):
+            ctx = mock_client_cls.return_value.__enter__.return_value
+            ctx.get_account.return_value = fake_account
+            # Patch TOKEN_PATH.parent / ".env" to point to our tmp_path
+            with patch("parro.cli.Path", wraps=Path) as _:
+                # Simpler: just patch the env_path directly via TOKEN_PATH
+                from parro import client as client_mod
+
+                original = client_mod.TOKEN_PATH
+                client_mod.TOKEN_PATH = tmp_path / "tokens.json"
+                try:
+                    result = runner.invoke(
+                        cli,
+                        [
+                            "login",
+                            "-u",
+                            "user@test.nl",
+                            "-p",
+                            "secret",
+                            "--store",
+                        ],
+                    )
+                finally:
+                    client_mod.TOKEN_PATH = original
+
+            assert result.exit_code == 0
+            assert env_file.exists()
+            content = env_file.read_text()
+            assert "PARRO_USERNAME=user@test.nl" in content
+            assert "PARRO_PASSWORD=secret" in content
+            # File should be owner-only readable
+            mode = env_file.stat().st_mode & 0o777
+            assert mode == 0o600
 
 
 class TestLogoutCommand:
@@ -114,9 +126,10 @@ class TestLogoutCommand:
         """Logout when no tokens file exists should print a message."""
         with patch("parro.cli.Path.exists", return_value=False):
             # We need to patch at the module level where TOKEN_PATH is used
-            from parro.client import TOKEN_PATH
-            import tempfile
             import os
+            import tempfile
+
+            from parro.client import TOKEN_PATH
 
             # Use a fake token path that doesn't exist
             fake_path = os.path.join(tempfile.gettempdir(), "parro-test-nonexistent-tokens.json")

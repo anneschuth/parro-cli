@@ -16,6 +16,8 @@ Usage:
 
 from __future__ import annotations
 
+__version__ = "0.3.0"
+
 import json
 import sys
 from datetime import datetime
@@ -23,21 +25,15 @@ from pathlib import Path
 
 import click
 import httpx
-
 from rich.console import Console
-from rich.table import Table
 from rich.panel import Panel
+from rich.table import Table
 
-from .client import ParroClient, ParroAuth
+from .client import ParroAuth, ParroClient
+from .helpers import identity_name as _identity_name
+from .helpers import link_id as _link_id
 
 console = Console()
-
-
-def _link_id(item: dict, rel: str = "self") -> int | None:
-    for link in item.get("links", []):
-        if link.get("rel") == rel:
-            return link.get("id")
-    return None
 
 
 _last_attachment_urls: list[str] = []
@@ -65,18 +61,6 @@ def _fmt_date(iso: str) -> str:
         return dt.strftime("%d %b %H:%M")
     except (ValueError, TypeError):
         return iso[:16]
-
-
-def _identity_name(identity: dict) -> str:
-    """Extract display name from an identity object."""
-    name = identity.get("displayName", "")
-    if not name:
-        first = identity.get("firstName", "")
-        prefix = identity.get("surnamePrefix", "")
-        last = identity.get("surname", "")
-        parts = [first, prefix, last] if prefix else [first, last]
-        name = " ".join(p for p in parts if p)
-    return name or "Onbekend"
 
 
 def _print_announcements(items: list[dict], as_json: bool):
@@ -123,18 +107,23 @@ def _print_announcements(items: list[dict], as_json: bool):
                     idx = len(_last_attachment_urls)
                     size_str = f" ({size // 1024}KB)" if size else ""
                     filename = url.split("/")[-1]
-                    att_lines += f"\n  [dim]\\[{idx}][/dim] [{icon}] [link={url}]{filename}[/link]{size_str}"
+                    att_lines += (
+                        f"\n  [dim]\\[{idx}][/dim] [{icon}]"
+                        f" [link={url}]{filename}[/link]{size_str}"
+                    )
                     break
 
         body = f"{meta}\n\n{contents[:500]}"
         if att_lines:
             body += f"\n{att_lines}"
 
-        console.print(Panel(
-            body,
-            title=header,
-            border_style="blue" if read else "red",
-        ))
+        console.print(
+            Panel(
+                body,
+                title=header,
+                border_style="blue" if read else "red",
+            )
+        )
         console.print()
 
     # Save attachment URLs for `parro open <n>`
@@ -144,12 +133,13 @@ def _print_announcements(items: list[dict], as_json: bool):
 
 class AliasedGroup(click.Group):
     """Click group that handles errors gracefully."""
+
     pass
 
 
 @click.group(cls=AliasedGroup)
 @click.option("--json", "as_json", is_flag=True, default=False, help="Output als JSON")
-@click.version_option(version="0.2.0", prog_name="parro")
+@click.version_option(version=__version__, prog_name="parro")
 @click.pass_context
 def cli(ctx, as_json):
     """Parro CLI - toegang tot het Parro schoolplatform vanuit de terminal."""
@@ -160,7 +150,10 @@ def cli(ctx, as_json):
 @cli.command()
 @click.option("-u", "--username", default=None, help="Email (of PARRO_USERNAME env)")
 @click.option("-p", "--password", default=None, help="Wachtwoord (of PARRO_PASSWORD env)")
-def login(username, password):
+@click.option(
+    "--store", is_flag=True, default=False, help="Credentials opslaan in ~/.config/parro/.env"
+)
+def login(username, password, store):
     """Inloggen bij Parro via headless OAuth2 flow."""
     import os
 
@@ -169,7 +162,8 @@ def login(username, password):
     from .client import TOKEN_PATH
 
     # Load .env files: ~/.config/parro/.env first, then local .env
-    load_dotenv(TOKEN_PATH.parent / ".env")
+    env_path = TOKEN_PATH.parent / ".env"
+    load_dotenv(env_path)
     load_dotenv()  # local .env
 
     username = username or os.environ.get("PARRO_USERNAME", "")
@@ -183,6 +177,12 @@ def login(username, password):
             account = client.get_account()
             email = account.get("email", "")
             console.print(f"  Email: {email}")
+
+        if store and username and password:
+            env_path.parent.mkdir(parents=True, exist_ok=True)
+            env_path.write_text(f"PARRO_USERNAME={username}\nPARRO_PASSWORD={password}\n")
+            env_path.chmod(0o600)
+            console.print(f"  [dim]Credentials opgeslagen in {env_path}[/]")
     except Exception as e:
         console.print(f"[red]Login mislukt: {e}[/]")
         sys.exit(1)
@@ -210,13 +210,15 @@ def account(ctx):
         if as_json:
             print(json.dumps(data, indent=2, default=str))
             return
-        console.print(Panel(
-            f"Email: {data.get('email', '')}\n"
-            f"Username: {data.get('externalUsername', '')}\n"
-            f"ID: {_link_id(data)}",
-            title="[bold]Parro Account[/]",
-            border_style="blue",
-        ))
+        console.print(
+            Panel(
+                f"Email: {data.get('email', '')}\n"
+                f"Username: {data.get('externalUsername', '')}\n"
+                f"ID: {_link_id(data)}",
+                title="[bold]Parro Account[/]",
+                border_style="blue",
+            )
+        )
 
 
 @cli.command()
@@ -232,20 +234,8 @@ def announcements(ctx, limit, group):
             items = client.get_announcements(group_id=group)
             _print_announcements(items[:limit], as_json)
         else:
-            # All groups - fetch per group so we can show the group name
-            groups = client.get_groups()
-            all_items = []
-            for g in groups:
-                gid = _link_id(g)
-                gname = g.get("name", "")
-                items = client.get_announcements(group_id=gid)
-                for item in items:
-                    item["_group_name"] = gname
-                all_items.extend(items)
-
-            # Sort by date
-            all_items.sort(key=lambda a: a.get("sortDate", ""))
-            _print_announcements(all_items[-limit:], as_json)
+            items = client.get_all_announcements(limit=limit)
+            _print_announcements(items, as_json)
 
 
 @cli.command()
@@ -272,9 +262,7 @@ def chatrooms(ctx):
         table.add_column("Ongelezen", style="red")
 
         # Sort by most recent activity
-        sorted_items = sorted(
-            items, key=lambda r: r.get("sortDate", ""), reverse=True
-        )
+        sorted_items = sorted(items, key=lambda r: r.get("sortDate", ""), reverse=True)
         for room in sorted_items:
             room_id = str(_link_id(room) or "")
             name = room.get("title", room.get("subject", room.get("name", "")))
@@ -309,8 +297,6 @@ def messages(ctx, chatroom_id, limit):
             sender = _identity_name(identity)
             text = msg.get("text", msg.get("contents", ""))
             created = _fmt_date(msg.get("lastModifiedAt", ""))
-            dtype = msg.get("dtype", "")
-
             if not text:
                 text = "[dim]\\[media][/dim]"
 

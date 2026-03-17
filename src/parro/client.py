@@ -106,13 +106,10 @@ class ParroAuth:
             # Step 2: We should now be on the login page.
             # Find the login form action URL and any hidden fields.
             html = resp.text
-            action_match = re.search(
-                r'<form[^>]*action="([^"]*)"', html, re.IGNORECASE
-            )
+            action_match = re.search(r'<form[^>]*action="([^"]*)"', html, re.IGNORECASE)
             if not action_match:
                 raise RuntimeError(
-                    "Kon het login formulier niet vinden. "
-                    "Mogelijk is de IDP interface veranderd."
+                    "Kon het login formulier niet vinden. Mogelijk is de IDP interface veranderd."
                 )
 
             form_action = action_match.group(1).replace("&amp;", "&")
@@ -161,9 +158,7 @@ class ParroAuth:
                 if resp.status_code not in (301, 302, 303, 307, 308):
                     # Check if we're on an error page
                     if "error" in resp.text.lower() and "password" in resp.text.lower():
-                        raise RuntimeError(
-                            "Login mislukt: onjuist wachtwoord of gebruikersnaam."
-                        )
+                        raise RuntimeError("Login mislukt: onjuist wachtwoord of gebruikersnaam.")
                     # Maybe there's a "choose application" page
                     if "kies_applicatie" in resp.url.path:
                         # Click on Parro — find the link
@@ -184,9 +179,7 @@ class ParroAuth:
 
                 # Check for the parro:// redirect with code
                 if location.startswith("parro://"):
-                    qs = urllib.parse.parse_qs(
-                        urllib.parse.urlparse(location).query
-                    )
+                    qs = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)
                     if "code" in qs:
                         code = qs["code"][0]
                         # Exchange for tokens
@@ -203,9 +196,7 @@ class ParroAuth:
                         token_resp.raise_for_status()
                         tokens = token_resp.json()
                         if "access_token" not in tokens:
-                            raise RuntimeError(
-                                f"Token exchange mislukt: {tokens}"
-                            )
+                            raise RuntimeError(f"Token exchange mislukt: {tokens}")
                         _save_tokens(tokens)
                         return tokens
 
@@ -284,9 +275,7 @@ class ParroClient:
         if not self.token:
             self.token = ParroAuth.get_token()
         if not self.token:
-            raise RuntimeError(
-                "Not authenticated. Run `parro login` first."
-            )
+            raise RuntimeError("Not authenticated. Run `parro login` first.")
         self._client = httpx.Client(
             base_url=REST_API,
             timeout=30,
@@ -342,3 +331,27 @@ class ParroClient:
 
     def get_unread_counts(self) -> list[dict]:
         return self._items("/identity/unreadcounts")
+
+    def get_all_announcements(self, limit: int | None = None) -> list[dict]:
+        """Fetch announcements across all groups, enriched with group name.
+
+        Each announcement dict gets a ``_group_name`` key.  Results are
+        sorted by ``sortDate`` ascending.  When *limit* is given only the
+        last *limit* items are returned.
+        """
+        from .helpers import link_id
+
+        groups = self.get_groups()
+        all_items: list[dict] = []
+        for g in groups:
+            gid = link_id(g)
+            gname = g.get("name", "")
+            items = self.get_announcements(group_id=gid)
+            for item in items:
+                item["_group_name"] = gname
+            all_items.extend(items)
+
+        all_items.sort(key=lambda a: a.get("sortDate", ""))
+        if limit is not None:
+            all_items = all_items[-limit:]
+        return all_items
