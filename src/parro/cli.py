@@ -22,6 +22,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import click
 import httpx
@@ -52,7 +53,7 @@ def _load_attachment_urls() -> list[str]:
     return []
 
 
-def _fmt_date(iso: str) -> str:
+def _fmt_date(iso: str | None) -> str:
     """Format ISO datetime to readable Dutch format."""
     if not iso:
         return ""
@@ -63,7 +64,7 @@ def _fmt_date(iso: str) -> str:
         return iso[:16]
 
 
-def _print_announcements(items: list[dict], as_json: bool):
+def _print_announcements(items: list[dict[str, Any]], as_json: bool) -> None:
     if as_json:
         print(json.dumps(items, indent=2, default=str))
         return
@@ -141,7 +142,7 @@ class AliasedGroup(click.Group):
 @click.option("--json", "as_json", is_flag=True, default=False, help="Output als JSON")
 @click.version_option(version=__version__, prog_name="parro")
 @click.pass_context
-def cli(ctx, as_json):
+def cli(ctx: click.Context, as_json: bool) -> None:
     """Parro CLI - toegang tot het Parro schoolplatform vanuit de terminal."""
     ctx.ensure_object(dict)
     ctx.obj["json"] = as_json
@@ -153,7 +154,7 @@ def cli(ctx, as_json):
 @click.option(
     "--store", is_flag=True, default=False, help="Credentials opslaan in ~/.config/parro/.env"
 )
-def login(username, password, store):
+def login(username: str | None, password: str | None, store: bool) -> None:
     """Inloggen bij Parro via headless OAuth2 flow."""
     import os
 
@@ -189,7 +190,7 @@ def login(username, password, store):
 
 
 @cli.command()
-def logout():
+def logout() -> None:
     """Uitloggen (tokens verwijderen)."""
     from .client import TOKEN_PATH
 
@@ -202,7 +203,7 @@ def logout():
 
 @cli.command()
 @click.pass_context
-def account(ctx):
+def account(ctx: click.Context) -> None:
     """Account info tonen."""
     as_json = ctx.obj["json"]
     with ParroClient() as client:
@@ -225,7 +226,7 @@ def account(ctx):
 @click.option("--limit", default=20, type=int, help="Maximum aantal mededelingen")
 @click.option("--group", default=None, type=int, help="Filter op groep ID")
 @click.pass_context
-def announcements(ctx, limit, group):
+def announcements(ctx: click.Context, limit: int, group: int | None) -> None:
     """Mededelingen ophalen."""
     as_json = ctx.obj["json"]
     with ParroClient() as client:
@@ -240,7 +241,7 @@ def announcements(ctx, limit, group):
 
 @cli.command()
 @click.pass_context
-def chatrooms(ctx):
+def chatrooms(ctx: click.Context) -> None:
     """Chatrooms tonen, gesorteerd op activiteit."""
     as_json = ctx.obj["json"]
     with ParroClient() as client:
@@ -278,7 +279,7 @@ def chatrooms(ctx):
 @click.argument("chatroom_id", type=int)
 @click.option("--limit", default=50, type=int, help="Maximum aantal berichten")
 @click.pass_context
-def messages(ctx, chatroom_id, limit):
+def messages(ctx: click.Context, chatroom_id: int, limit: int) -> None:
     """Berichten in een chatroom tonen."""
     as_json = ctx.obj["json"]
     with ParroClient() as client:
@@ -305,7 +306,7 @@ def messages(ctx, chatroom_id, limit):
 
 @click.command("open")
 @click.argument("ref", type=str)
-def open_attachment(ref):
+def open_attachment(ref: str) -> None:
     """Open een bijlage in Preview/standaard app.
 
     REF is een nummer (uit announcements output) of een URL.
@@ -346,7 +347,7 @@ cli.add_command(open_attachment)
 
 @cli.command()
 @click.pass_context
-def children(ctx):
+def children(ctx: click.Context) -> None:
     """Kinderen tonen."""
     as_json = ctx.obj["json"]
     with ParroClient() as client:
@@ -369,7 +370,7 @@ def children(ctx):
 
 @cli.command()
 @click.pass_context
-def groups(ctx):
+def groups(ctx: click.Context) -> None:
     """Groepen tonen."""
     as_json = ctx.obj["json"]
     with ParroClient() as client:
@@ -403,7 +404,7 @@ def groups(ctx):
 
 @cli.command()
 @click.pass_context
-def unread(ctx):
+def unread(ctx: click.Context) -> None:
     """Ongelezen aantallen tonen."""
     as_json = ctx.obj["json"]
     with ParroClient() as client:
@@ -427,7 +428,7 @@ def unread(ctx):
 
 @cli.command()
 @click.pass_context
-def calendar(ctx):
+def calendar(ctx: click.Context) -> None:
     """Kalender iCal URLs tonen."""
     as_json = ctx.obj["json"]
     with ParroClient() as client:
@@ -447,7 +448,7 @@ def calendar(ctx):
 
 @cli.command()
 @click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
-def completion(shell):
+def completion(shell: str) -> None:
     """Output shell completion script.
 
     Add to your shell config to enable tab completion:
@@ -475,7 +476,7 @@ def completion(shell):
         del os.environ["_PARRO_COMPLETE"]
 
 
-def main():
+def main() -> None:
     try:
         cli(standalone_mode=True)
     except RuntimeError as e:

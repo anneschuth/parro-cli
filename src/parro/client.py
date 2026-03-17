@@ -15,6 +15,8 @@ import re
 import secrets
 import urllib.parse
 from pathlib import Path
+from types import TracebackType
+from typing import Any
 
 import httpx
 
@@ -40,13 +42,13 @@ def _generate_pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
-def _save_tokens(data: dict) -> None:
+def _save_tokens(data: dict[str, str]) -> None:
     TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
     TOKEN_PATH.write_text(json.dumps(data, indent=2))
     TOKEN_PATH.chmod(0o600)
 
 
-def _load_tokens() -> dict | None:
+def _load_tokens() -> dict[str, str] | None:
     if TOKEN_PATH.exists():
         try:
             return json.loads(TOKEN_PATH.read_text())
@@ -59,7 +61,7 @@ class ParroAuth:
     """Handle OAuth2 authentication for Parro."""
 
     @staticmethod
-    def login(username: str | None = None, password: str | None = None) -> dict:
+    def login(username: str | None = None, password: str | None = None) -> dict[str, str]:
         """Log in to Parro via headless OAuth2 flow.
 
         Performs the full authorization code + PKCE flow by:
@@ -216,7 +218,7 @@ class ParroAuth:
             )
 
     @staticmethod
-    def refresh(refresh_token: str) -> dict:
+    def refresh(refresh_token: str) -> dict[str, str]:
         """Refresh the access token."""
         resp = httpx.post(
             TOKEN_URL,
@@ -271,7 +273,7 @@ class ParroClient:
         self.token = token
         self._client: httpx.Client | None = None
 
-    def __enter__(self):
+    def __enter__(self) -> ParroClient:
         if not self.token:
             self.token = ParroAuth.get_token()
         if not self.token:
@@ -286,53 +288,59 @@ class ParroClient:
         )
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         if self._client:
             self._client.close()
 
-    def _get(self, path: str, **params) -> dict | list:
+    def _get(self, path: str, **params: Any) -> Any:
+        assert self._client is not None
         resp = self._client.get(path, params=params or None)
         resp.raise_for_status()
         return resp.json()
 
-    def _items(self, path: str, **params) -> list[dict]:
+    def _items(self, path: str, **params: Any) -> list[dict[str, Any]]:
         data = self._get(path, **params)
         if isinstance(data, dict):
             return data.get("items", [])
         return data if isinstance(data, list) else []
 
-    def get_account(self) -> dict:
+    def get_account(self) -> dict[str, Any]:
         return self._get("/account/me")
 
-    def get_children(self) -> list[dict]:
+    def get_children(self) -> list[dict[str, Any]]:
         return self._items("/child")
 
-    def get_groups(self, scope: str | None = None) -> list[dict]:
-        params = {"dtype": "identity.RHomeGroup"}
+    def get_groups(self, scope: str | None = None) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"dtype": "identity.RHomeGroup"}
         if scope:
             params["scope"] = scope
         return self._items("/group", **params)
 
-    def get_announcements(self, group_id: int | None = None) -> list[dict]:
-        params: dict = {"dtype": "event.RAnnouncementEvent"}
+    def get_announcements(self, group_id: int | None = None) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"dtype": "event.RAnnouncementEvent"}
         if group_id:
             params["group"] = group_id
         return self._items("/event", **params)
 
-    def get_chatrooms(self) -> list[dict]:
+    def get_chatrooms(self) -> list[dict[str, Any]]:
         return self._items("/chatroom")
 
-    def get_chat_messages(self, chatroom_id: int) -> list[dict]:
+    def get_chat_messages(self, chatroom_id: int) -> list[dict[str, Any]]:
         return self._items(f"/chatroom/{chatroom_id}/chatmessage")
 
     def get_calendar_urls(self) -> list[str]:
         data = self._get("/calendar/sync")
         return data.get("strings", [])
 
-    def get_unread_counts(self) -> list[dict]:
+    def get_unread_counts(self) -> list[dict[str, Any]]:
         return self._items("/identity/unreadcounts")
 
-    def get_all_announcements(self, limit: int | None = None) -> list[dict]:
+    def get_all_announcements(self, limit: int | None = None) -> list[dict[str, Any]]:
         """Fetch announcements across all groups, enriched with group name.
 
         Each announcement dict gets a ``_group_name`` key.  Results are
