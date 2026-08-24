@@ -57,18 +57,126 @@ def _load_tokens() -> dict[str, str] | None:
     return None
 
 
+def _login_field_names(html: str) -> tuple[str, str]:
+    """Find the username/password input names on the IDP login form.
+
+    ParnaSys has renamed these before (``e-mailadres`` → ``emailadres``), so
+    read them from the page instead of hard-coding; fall back to the current
+    known names when the form can't be parsed.
+    """
+    user_field, pass_field = "emailadres", "wachtwoord"
+    for tag in re.findall(r"<input[^>]*>", html, re.IGNORECASE):
+        type_match = re.search(r'type="([^"]*)"', tag, re.IGNORECASE)
+        name_match = re.search(r'name="([^"]*)"', tag, re.IGNORECASE)
+        if not name_match:
+            continue
+        itype = (type_match.group(1) if type_match else "text").lower()
+        if itype == "password":
+            pass_field = name_match.group(1)
+        elif itype in ("text", "email") and "password" not in name_match.group(1).lower():
+            user_field = name_match.group(1)
+    return user_field, pass_field
+
+
+def _parse_account_chooser(html: str) -> list[dict[str, str]]:
+    """Parse the IDP's "Account kiezen" page.
+
+    When one login is linked to several identities (e.g. two guardians sharing
+    an e-mail address) the IDP shows an account list after the password. Each
+    entry is a Wicket-Ajax link; returns ``[{"name", "role", "url", "focus_id"}]``
+    in page order. Empty list when the page is not an account chooser.
+    """
+    links = dict(
+        re.findall(
+            r'"u":"([^"]*accountKeuze-accounts-account-\d+)","c":"([^"]+)"',
+            html,
+        )
+    )
+    accounts: list[dict[str, str]] = []
+    for url, focus_id in links.items():
+        item = re.search(rf'<li[^>]*id="{re.escape(focus_id)}"[^>]*>(.*?)</li>', html, re.DOTALL)
+        text = item.group(1) if item else ""
+        name_block = re.search(r'account-list__name"[^>]*>(.*?)</span>\s*</span>', text, re.DOTALL)
+        role_block = re.search(r'account-list__role"[^>]*>(.*?)</span>\s*</span>', text, re.DOTALL)
+
+        def _clean(block: re.Match[str] | None) -> str:
+            raw = re.sub(r"<[^>]+>", " ", block.group(1)) if block else ""
+            return re.sub(r"\s+", " ", raw).strip()
+
+        accounts.append(
+            {
+                "name": _clean(name_block),
+                "role": _clean(role_block),
+                "url": url,
+                "focus_id": focus_id,
+            }
+        )
+    return accounts
+
+
+def _choose_account(client: httpx.Client, page_url: str, html: str, account: str | None) -> str:
+    """Pick an entry on the account chooser and return the redirect it yields.
+
+    *account* is a case-insensitive substring of the displayed name (or role);
+    ``None`` picks the first entry. The click is a Wicket-Ajax GET whose
+    reply carries the next location in the ``Ajax-Location`` header or an
+    ``<ajax-response><redirect>`` body.
+    """
+    accounts = _parse_account_chooser(html)
+    if not accounts:
+        raise RuntimeError("Accountkeuze-pagina gevonden maar geen accounts herkend.")
+
+    chosen = accounts[0]
+    if account:
+        wanted = account.lower()
+        matches = [
+            a for a in accounts if wanted in a["name"].lower() or wanted in a["role"].lower()
+        ]
+        if not matches:
+            names = ", ".join(f"{a['name']} ({a['role']})" for a in accounts)
+            raise RuntimeError(f"Account '{account}' niet gevonden. Beschikbaar: {names}")
+        chosen = matches[0]
+
+    base_match = re.search(r'Wicket\.Ajax\.baseUrl="([^"]*)"', html)
+    base_url = base_match.group(1) if base_match else urllib.parse.urlparse(page_url).path
+    resp = client.get(
+        urllib.parse.urljoin(page_url, chosen["url"]),
+        headers={
+            "Wicket-Ajax": "true",
+            "Wicket-Ajax-BaseURL": base_url,
+            "Wicket-FocusedElementId": chosen["focus_id"],
+            "X-Requested-With": "XMLHttpRequest",
+        },
+    )
+    location = resp.headers.get("ajax-location", "")
+    if not location:
+        redirect_match = re.search(r"<redirect><!\[CDATA\[(.*?)\]\]></redirect>", resp.text)
+        location = redirect_match.group(1) if redirect_match else ""
+    if not location:
+        raise RuntimeError(
+            f"Accountkeuze voor '{chosen['name']}' gaf geen redirect (HTTP {resp.status_code})."
+        )
+    return location
+
+
 class ParroAuth:
     """Handle OAuth2 authentication for Parro."""
 
     @staticmethod
-    def login(username: str | None = None, password: str | None = None) -> dict[str, str]:
+    def login(
+        username: str | None = None,
+        password: str | None = None,
+        account: str | None = None,
+    ) -> dict[str, str]:
         """Log in to Parro via headless OAuth2 flow.
 
         Performs the full authorization code + PKCE flow by:
         1. Starting the OAuth authorize request
         2. Posting credentials to the IDP login form
-        3. Following redirects until we get the auth code
-        4. Exchanging the code for tokens
+        3. Picking an identity if the IDP shows an account chooser
+           (*account* = substring of the shown name; default: first entry)
+        4. Following redirects until we get the auth code
+        5. Exchanging the code for tokens
 
         No browser needed.
         """
@@ -141,9 +249,11 @@ class ParroAuth:
             ):
                 form_data[match.group(2)] = match.group(1)
 
-            # Add credentials — ParnaSys uses Dutch field names
-            form_data["e-mailadres"] = username
-            form_data["wachtwoord"] = password
+            # Add credentials — field names are read from the form because
+            # ParnaSys has renamed them before (e-mailadres → emailadres)
+            user_field, pass_field = _login_field_names(html)
+            form_data[user_field] = username
+            form_data[pass_field] = password
             # Wicket requires the submit button name to be present
             form_data["aanmelden"] = "x"
 
@@ -158,6 +268,16 @@ class ParroAuth:
             max_redirects = 20
             for _ in range(max_redirects):
                 if resp.status_code not in (301, 302, 303, 307, 308):
+                    # Several identities on one login → "Account kiezen" page
+                    if "accountKeuze" in resp.text:
+                        location = _choose_account(client, str(resp.url), resp.text, account)
+                        if location.startswith("parro://"):
+                            resp = httpx.Response(302, headers={"location": location})
+                            continue
+                        if not location.startswith("http"):
+                            location = urllib.parse.urljoin(str(resp.url), location)
+                        resp = client.get(location)
+                        continue
                     # Check if we're on an error page
                     if "error" in resp.text.lower() and "password" in resp.text.lower():
                         raise RuntimeError("Login mislukt: onjuist wachtwoord of gebruikersnaam.")

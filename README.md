@@ -116,6 +116,17 @@ parro login
 
 Voor `.env` bestanden: plaats ze in `~/.config/parro/.env` of in je huidige directory.
 
+### Meerdere accounts op één login
+
+Als je e-mailadres aan meerdere identiteiten gekoppeld is (bijvoorbeeld twee
+verzorgers die hetzelfde adres delen), toont ParnaSys na het wachtwoord een
+"Account kiezen"-pagina. Standaard wordt het eerste account gekozen; kies zelf met:
+
+```bash
+parro login --account "Jan"          # deel van de getoonde naam (of rol)
+export PARRO_ACCOUNT=Jan             # of via env
+```
+
 ### Tokens
 
 Na het inloggen worden tokens opgeslagen in `~/.config/parro/tokens.json` (mode `0600`). De CLI refresht automatisch verlopen tokens.

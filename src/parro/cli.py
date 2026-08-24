@@ -154,7 +154,13 @@ def cli(ctx: click.Context, as_json: bool) -> None:
 @click.option(
     "--store", is_flag=True, default=False, help="Credentials opslaan in ~/.config/parro/.env"
 )
-def login(username: str | None, password: str | None, store: bool) -> None:
+@click.option(
+    "-a",
+    "--account",
+    default=None,
+    help="Naam van het account als je login meerdere identiteiten heeft (of PARRO_ACCOUNT env)",
+)
+def login(username: str | None, password: str | None, store: bool, account: str | None) -> None:
     """Inloggen bij Parro via headless OAuth2 flow."""
     import os
 
@@ -169,9 +175,12 @@ def login(username: str | None, password: str | None, store: bool) -> None:
 
     username = username or os.environ.get("PARRO_USERNAME", "")
     password = password or os.environ.get("PARRO_PASSWORD", "")
+    account = account or os.environ.get("PARRO_ACCOUNT", "")
 
     try:
-        tokens = ParroAuth.login(username=username or None, password=password or None)
+        tokens = ParroAuth.login(
+            username=username or None, password=password or None, account=account or None
+        )
         console.print("[green]Login geslaagd![/]")
         # Show account info
         with ParroClient(tokens["access_token"]) as client:
