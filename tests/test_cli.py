@@ -152,6 +152,21 @@ class TestAnnouncementsCommand:
         assert "--limit" in result.output
         assert "--group" in result.output
 
+    def test_bracketed_text_rendered_literally(self, capsys):
+        from parro.cli import _print_announcements
+
+        # Without escaping, Rich swallows [groep 3] as a markup tag
+        item = {
+            "title": "Ophalen [let op]",
+            "contents": "De kinderen [groep 3] zijn om 12u vrij",
+            "createdAt": "2026-08-29T10:00:00",
+            "owner": {"firstName": "Juf", "surname": "Anna"},
+        }
+        _print_announcements([item], as_json=False)
+        out = capsys.readouterr().out
+        assert "[groep 3]" in out
+        assert "[let op]" in out
+
 
 class TestChatroomsCommand:
     def test_help(self):
@@ -164,6 +179,26 @@ class TestMessagesCommand:
         result = runner.invoke(cli, ["messages", "--help"])
         assert result.exit_code == 0
         assert "CHATROOM_ID" in result.output
+
+    def test_bracketed_text_rendered_literally(self):
+        msg = {
+            "identity": {"firstName": "Piet", "surname": "Jansen"},
+            "text": "tot morgen [duimpje omhoog]",
+            "lastModifiedAt": "2026-08-29T10:00:00",
+        }
+        with patch("parro.cli.ParroClient") as mock_cls:
+            mock_cls.return_value.__enter__.return_value.get_chat_messages.return_value = [msg]
+            result = runner.invoke(cli, ["messages", "123"])
+        assert result.exit_code == 0
+        assert "[duimpje omhoog]" in result.output
+
+    def test_empty_text_shows_media_placeholder(self):
+        msg = {"identity": {}, "text": "", "lastModifiedAt": "2026-08-29T10:00:00"}
+        with patch("parro.cli.ParroClient") as mock_cls:
+            mock_cls.return_value.__enter__.return_value.get_chat_messages.return_value = [msg]
+            result = runner.invoke(cli, ["messages", "123"])
+        assert result.exit_code == 0
+        assert "[media]" in result.output
 
 
 class TestOpenCommand:
