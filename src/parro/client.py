@@ -309,6 +309,38 @@ class ParroClient:
             return data.get("items", [])
         return data if isinstance(data, list) else []
 
+    def _items_paged(self, path: str, limit: int, **params: Any) -> list[dict[str, Any]]:
+        """Fetch up to *limit* items, paging with HTTP ``Range`` headers.
+
+        The API serves at most 100 items per response and ignores query
+        paging parameters; the rest of a collection is exposed via HTTP
+        ``Range`` headers (responses carry ``Content-Range: items 0-99/…``).
+        Pages are fetched until *limit* items are collected or the
+        collection runs out. The total in ``Content-Range`` is unreliable,
+        so a short, empty, or 416 response ends the loop instead.
+        """
+        assert self._client is not None
+        page_size = 100
+        items: list[dict[str, Any]] = []
+        while len(items) < limit:
+            start = len(items)
+            resp = self._client.get(
+                path,
+                params=params or None,
+                headers={"Range": f"items={start}-{start + page_size - 1}"},
+            )
+            if resp.status_code == 416:  # asked past the end of the collection
+                break
+            resp.raise_for_status()
+            data = resp.json()
+            page = data.get("items", []) if isinstance(data, dict) else []
+            if not page:
+                break
+            items.extend(page)
+            if len(page) < page_size:
+                break
+        return items[:limit]
+
     def get_account(self) -> dict[str, Any]:
         return self._get("/account/me")
 
@@ -321,17 +353,38 @@ class ParroClient:
             params["scope"] = scope
         return self._items("/group", **params)
 
-    def get_announcements(self, group_id: int | None = None) -> list[dict[str, Any]]:
+    def get_announcements(
+        self, group_id: int | None = None, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Fetch announcements, newest first.
+
+        With *limit* set, pages with HTTP ``Range`` headers until *limit*
+        announcements are collected or history runs out. ``None`` keeps the
+        single-request behaviour (the newest page only, at most 100).
+        """
         params: dict[str, Any] = {"dtype": "event.RAnnouncementEvent"}
         if group_id:
             params["group"] = group_id
-        return self._items("/event", **params)
+        if limit is None:
+            return self._items("/event", **params)
+        return self._items_paged("/event", limit, **params)
 
     def get_chatrooms(self) -> list[dict[str, Any]]:
         return self._items("/chatroom")
 
-    def get_chat_messages(self, chatroom_id: int) -> list[dict[str, Any]]:
-        return self._items(f"/chatroom/{chatroom_id}/chatmessage")
+    def get_chat_messages(
+        self, chatroom_id: int, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Fetch chat messages, newest first.
+
+        With *limit* set, pages with HTTP ``Range`` headers until *limit*
+        messages are collected or history runs out. ``None`` keeps the
+        single-request behaviour (the newest page only, at most 100).
+        """
+        path = f"/chatroom/{chatroom_id}/chatmessage"
+        if limit is None:
+            return self._items(path)
+        return self._items_paged(path, limit)
 
     def get_calendar_urls(self) -> list[str]:
         data = self._get("/calendar/sync")
@@ -354,7 +407,7 @@ class ParroClient:
         for g in groups:
             gid = link_id(g)
             gname = g.get("name", "")
-            items = self.get_announcements(group_id=gid)
+            items = self.get_announcements(group_id=gid, limit=limit)
             for item in items:
                 item["_group_name"] = gname
             all_items.extend(items)
