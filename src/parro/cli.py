@@ -114,7 +114,7 @@ def _print_announcements(items: list[dict[str, Any]], as_json: bool) -> None:
                     )
                     break
 
-        body = f"{meta}\n\n{contents[:500]}"
+        body = f"{meta}\n\n{contents}"
         if att_lines:
             body += f"\n{att_lines}"
 

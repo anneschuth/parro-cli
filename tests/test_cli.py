@@ -152,6 +152,24 @@ class TestAnnouncementsCommand:
         assert "--limit" in result.output
         assert "--group" in result.output
 
+    def test_long_contents_not_truncated(self, capsys):
+        from parro.cli import _print_announcements
+
+        # Real announcements regularly exceed 500 characters; the full text
+        # must be rendered, not silently cut off.
+        contents = "begin " + "woord " * 200 + "allerlaatstewoord"
+        assert len(contents) > 500
+        item = {
+            "title": "Lang bericht",
+            "contents": contents,
+            "createdAt": "2026-08-29T10:00:00",
+            "owner": {"firstName": "Juf", "surname": "Anna"},
+        }
+        _print_announcements([item], as_json=False)
+        # Rich wraps text and draws panel borders, so compare alphanumerics only
+        rendered = "".join(c for c in capsys.readouterr().out if c.isalnum())
+        assert "allerlaatstewoord" in rendered
+
 
 class TestChatroomsCommand:
     def test_help(self):
