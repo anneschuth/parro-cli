@@ -185,8 +185,8 @@ def login(username: str | None, password: str | None, store: bool, account: str 
         console.print("[green]Login geslaagd![/]")
         # Show account info
         with ParroClient(tokens["access_token"]) as client:
-            account = client.get_account()
-            email = account.get("email", "")
+            me = client.get_account()
+            email = me.get("email", "")
             console.print(f"  Email: {email}")
 
         if store and username and password:
