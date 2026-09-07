@@ -27,6 +27,7 @@ from typing import Any
 import click
 import httpx
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -84,11 +85,11 @@ def _print_announcements(items: list[dict[str, Any]], as_json: bool) -> None:
         group_name = ann.get("_group_name", "")
 
         read_icon = "[dim]●[/]" if read else "[bold red]●[/]"
-        header = f"{read_icon} [bold]{title}[/]"
+        header = f"{read_icon} [bold]{escape(title)}[/]"
         meta_parts = []
         if group_name:
-            meta_parts.append(f"[cyan]{group_name}[/cyan]")
-        meta_parts.append(f"Van: {owner_name}")
+            meta_parts.append(f"[cyan]{escape(group_name)}[/cyan]")
+        meta_parts.append(f"Van: {escape(owner_name)}")
         meta_parts.append(created)
         if attachments:
             meta_parts.append(f"{len(attachments)} bijlage(n)")
@@ -110,11 +111,11 @@ def _print_announcements(items: list[dict[str, Any]], as_json: bool) -> None:
                     filename = url.split("/")[-1]
                     att_lines += (
                         f"\n  [dim]\\[{idx}][/dim] [{icon}]"
-                        f" [link={url}]{filename}[/link]{size_str}"
+                        f" [link={url}]{escape(filename)}[/link]{size_str}"
                     )
                     break
 
-        body = f"{meta}\n\n{contents}"
+        body = f"{meta}\n\n{escape(contents)}"
         if att_lines:
             body += f"\n{att_lines}"
 
@@ -279,7 +280,7 @@ def chatrooms(ctx: click.Context) -> None:
             room_type = room.get("type", "")
             last = _fmt_date(room.get("sortDate", ""))
             unread = str(room.get("unreadCount", 0))
-            table.add_row(room_id, name, room_type, last, unread)
+            table.add_row(room_id, escape(name), room_type, last, unread)
 
         console.print(table)
 
@@ -307,10 +308,10 @@ def messages(ctx: click.Context, chatroom_id: int, limit: int) -> None:
             sender = _identity_name(identity)
             text = msg.get("text", msg.get("contents", ""))
             created = _fmt_date(msg.get("lastModifiedAt", ""))
-            if not text:
-                text = "[dim]\\[media][/dim]"
+            # Escape user text so Rich doesn't swallow [bracketed] parts as markup
+            text_markup = escape(text) if text else "[dim]\\[media][/dim]"
 
-            console.print(f"  [dim]{created}[/] [bold]{sender}:[/] {text}")
+            console.print(f"  [dim]{created}[/] [bold]{escape(sender)}:[/] {text_markup}")
 
 
 @click.command("open")
