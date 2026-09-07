@@ -7,6 +7,7 @@ import hashlib
 import json
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from parro.client import ParroClient, _generate_pkce, _load_tokens, _save_tokens
@@ -146,3 +147,98 @@ class TestParroClientNotAuthenticated:
             ParroClient(),
         ):
             pass
+
+
+class TestGetChatMessages:
+    """Range-header pagination against a mocked transport."""
+
+    TOTAL = 250
+
+    def _make_client(self, state: dict) -> ParroClient:
+        import re as _re
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path.endswith("/chatroom/42/chatmessage")
+            range_header = request.headers.get("range", "")
+            state.setdefault("ranges", []).append(range_header or None)
+            match = _re.fullmatch(r"items=(\d+)-(\d+)", range_header)
+            start, end = (int(match.group(1)), int(match.group(2))) if match else (0, 99)
+            end = min(end, start + 99)  # server caps pages at 100 items
+            if start >= self.TOTAL:
+                return httpx.Response(416)
+            page = [{"id": i} for i in range(start, min(end + 1, self.TOTAL))]
+            return httpx.Response(
+                206,
+                json={"items": page},
+                headers={"Content-Range": f"items {start}-{start + len(page) - 1}/{self.TOTAL}"},
+            )
+
+        client = ParroClient.__new__(ParroClient)
+        client.token = "token"
+        client._client = httpx.Client(
+            base_url="https://rest.test", transport=httpx.MockTransport(handler)
+        )
+        return client
+
+    def test_default_is_single_request(self):
+        state: dict = {}
+        items = self._make_client(state).get_chat_messages(42)
+        assert len(items) == 100
+        assert state["ranges"] == [None]
+
+    def test_limit_pages_with_range_headers(self):
+        state: dict = {}
+        items = self._make_client(state).get_chat_messages(42, limit=250)
+        assert len(items) == 250
+        assert [m["id"] for m in items] == list(range(250))  # no gaps or overlap
+        assert state["ranges"] == ["items=0-99", "items=100-199", "items=200-299"]
+
+    def test_limit_stops_when_history_runs_out(self):
+        state: dict = {}
+        items = self._make_client(state).get_chat_messages(42, limit=999)
+        assert len(items) == self.TOTAL
+
+    def test_limit_below_page_size(self):
+        state: dict = {}
+        items = self._make_client(state).get_chat_messages(42, limit=30)
+        assert len(items) == 30
+        assert state["ranges"] == ["items=0-99"]
+
+
+class TestGetAnnouncementsPaged:
+    """get_announcements pages /event the same way, keeping query params."""
+
+    TOTAL = 150
+
+    def _make_client(self, state: dict) -> ParroClient:
+        import re as _re
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path.endswith("/event")
+            state.setdefault("params", []).append(dict(request.url.params))
+            match = _re.fullmatch(r"items=(\d+)-(\d+)", request.headers.get("range", ""))
+            start = int(match.group(1)) if match else 0
+            page = [{"id": i} for i in range(start, min(start + 100, self.TOTAL))]
+            return httpx.Response(206, json={"items": page})
+
+        client = ParroClient.__new__(ParroClient)
+        client.token = "token"
+        client._client = httpx.Client(
+            base_url="https://rest.test", transport=httpx.MockTransport(handler)
+        )
+        return client
+
+    def test_pages_and_keeps_params(self):
+        state: dict = {}
+        items = self._make_client(state).get_announcements(group_id=7, limit=150)
+        assert len(items) == 150
+        assert [a["id"] for a in items] == list(range(150))
+        # dtype and group filters must be sent on every page
+        for params in state["params"]:
+            assert params == {"dtype": "event.RAnnouncementEvent", "group": "7"}
+
+    def test_default_is_single_request(self):
+        state: dict = {}
+        items = self._make_client(state).get_announcements(group_id=7)
+        assert len(items) == 100
+        assert len(state["params"]) == 1

@@ -242,7 +242,7 @@ def announcements(ctx: click.Context, limit: int, group: int | None) -> None:
     with ParroClient() as client:
         if group:
             # Single group
-            items = client.get_announcements(group_id=group)
+            items = client.get_announcements(group_id=group, limit=limit)
             _print_announcements(items[:limit], as_json)
         else:
             items = client.get_all_announcements(limit=limit)
@@ -293,7 +293,7 @@ def messages(ctx: click.Context, chatroom_id: int, limit: int) -> None:
     """Berichten in een chatroom tonen."""
     as_json = ctx.obj["json"]
     with ParroClient() as client:
-        items = client.get_chat_messages(chatroom_id)
+        items = client.get_chat_messages(chatroom_id, limit=limit)
 
         if as_json:
             print(json.dumps(items[:limit], indent=2, default=str))
