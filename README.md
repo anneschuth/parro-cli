@@ -176,6 +176,12 @@ uv run parro --help
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for more details.
 
+## Bijdragen
+
+Pull requests zijn welkom. Draai `uv run pytest`, `uv run ruff check .` en `uv run ty check` voordat je een PR opent; de CI doet hetzelfde.
+
+Met dank aan [@mingoes](https://github.com/mingoes) (login-fix na de IDP-wijziging en de accountkeuze) en [@wienke](https://github.com/wienke) (paginering via Range-headers, Rich-escaping en de afkapbug in mededelingen).
+
 ## Licentie
 
 MIT — see [LICENSE](LICENSE).
