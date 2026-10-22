@@ -51,7 +51,7 @@ def _token_path(account: str | None = None) -> Path:
     """
     if not account:
         return TOKEN_PATH
-    slug = re.sub(r"[^a-z0-9]+", "-", account.lower()).strip("-") or "account"
+    slug = re.sub(r"[\W_]+", "-", account.lower()).strip("-") or "account"
     return TOKEN_PATH.with_name(f"tokens-{slug}.json")
 
 

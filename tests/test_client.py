@@ -108,6 +108,7 @@ class TestPerAccountTokens:
             expected = tmp_path / "tokens-kindercampus-zuidas.json"
             assert _token_path("Kindercampus Zuidas") == expected
             assert _token_path("  De Regenboog! ") == tmp_path / "tokens-de-regenboog.json"
+            assert _token_path("École Lumière") == tmp_path / "tokens-école-lumière.json"
 
     def test_accounts_do_not_overwrite_each_other(self, tmp_path):
         with patch("parro.client.TOKEN_PATH", tmp_path / "tokens.json"):

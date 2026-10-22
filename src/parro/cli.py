@@ -352,10 +352,12 @@ def send(ctx: click.Context, chatroom_id: int, text: str | None) -> None:
     TEXT is de tekst van het bericht; laat weg of gebruik "-" om van stdin te lezen.
     """
     as_json = ctx.obj["json"]
+    if text is None and sys.stdin.isatty():
+        raise click.UsageError('Geef de tekst mee, of "-" om van stdin te lezen.')
     if text is None or text == "-":
         text = sys.stdin.read()
-    text = text.strip()
-    if not text:
+    text = text.rstrip("\n")
+    if not text.strip():
         console.print("[red]Leeg bericht, niets verstuurd.[/]")
         sys.exit(1)
 

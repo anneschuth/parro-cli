@@ -243,6 +243,25 @@ class TestSendCommand:
         assert result.exit_code == 0, result.output
         client.send_chat_message.assert_called_once_with(123, "Regel 1\nRegel 2")
 
+    def test_keeps_leading_whitespace(self):
+        with patch("parro.cli.ParroClient") as mock_cls:
+            client = mock_cls.return_value.__enter__.return_value
+            client.send_chat_message.return_value = {}
+            result = runner.invoke(cli, ["send", "123", "-"], input="  ingesprongen\n\n")
+        assert result.exit_code == 0, result.output
+        client.send_chat_message.assert_called_once_with(123, "  ingesprongen")
+
+    def test_tty_stdin_without_text_is_refused(self):
+        with (
+            patch("parro.cli.ParroClient") as mock_cls,
+            patch("parro.cli.sys") as mock_sys,
+        ):
+            mock_sys.stdin.isatty.return_value = True
+            result = runner.invoke(cli, ["send", "123"])
+        assert result.exit_code == 2
+        mock_sys.stdin.read.assert_not_called()
+        mock_cls.assert_not_called()
+
     def test_empty_message_is_refused(self):
         with patch("parro.cli.ParroClient") as mock_cls:
             result = runner.invoke(cli, ["send", "123"], input="  \n")
