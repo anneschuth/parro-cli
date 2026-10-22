@@ -5,6 +5,7 @@ Usage:
     parro announcements [--limit N]      # Show announcements
     parro chatrooms                      # List chat rooms
     parro messages CHATROOM_ID           # Show messages in a chatroom
+    parro send CHATROOM_ID [TEXT]        # Send a message to a chatroom
     parro children                       # List children
     parro groups                         # List groups
     parro unread                         # Show unread counts
@@ -12,6 +13,8 @@ Usage:
     parro account                        # Show account info
     parro open REF                       # Open attachment by number or URL
     parro completion SHELL               # Output shell completion script
+
+    parro --account NAME <command>       # Use the tokens of one account (school)
 """
 
 from __future__ import annotations
@@ -141,12 +144,30 @@ class AliasedGroup(click.Group):
 
 @click.group(cls=AliasedGroup)
 @click.option("--json", "as_json", is_flag=True, default=False, help="Output als JSON")
+@click.option(
+    "-a",
+    "--account",
+    default=None,
+    help="Account (naam of school) waarvan de tokens gebruikt worden (of PARRO_ACCOUNT env)",
+)
 @click.version_option(version=__version__, prog_name="parro")
 @click.pass_context
-def cli(ctx: click.Context, as_json: bool) -> None:
+def cli(ctx: click.Context, as_json: bool, account: str | None) -> None:
     """Parro CLI - toegang tot het Parro schoolplatform vanuit de terminal."""
+    import os
+
+    from dotenv import load_dotenv
+
+    from .client import TOKEN_PATH
+
+    # Load .env files: ~/.config/parro/.env first, then local .env — here, so
+    # PARRO_ACCOUNT from them applies to every command, not only to login
+    load_dotenv(TOKEN_PATH.parent / ".env")
+    load_dotenv()
+
     ctx.ensure_object(dict)
     ctx.obj["json"] = as_json
+    ctx.obj["account"] = account or os.environ.get("PARRO_ACCOUNT") or None
 
 
 @cli.command()
@@ -161,22 +182,27 @@ def cli(ctx: click.Context, as_json: bool) -> None:
     default=None,
     help="Naam van het account als je login meerdere identiteiten heeft (of PARRO_ACCOUNT env)",
 )
-def login(username: str | None, password: str | None, store: bool, account: str | None) -> None:
-    """Inloggen bij Parro via headless OAuth2 flow."""
-    import os
+@click.pass_context
+def login(
+    ctx: click.Context,
+    username: str | None,
+    password: str | None,
+    store: bool,
+    account: str | None,
+) -> None:
+    """Inloggen bij Parro via headless OAuth2 flow.
 
-    from dotenv import load_dotenv
+    Met --account worden de tokens per account bewaard, zodat je met
+    meerdere scholen tegelijk ingelogd kunt zijn.
+    """
+    import os
 
     from .client import TOKEN_PATH
 
-    # Load .env files: ~/.config/parro/.env first, then local .env
     env_path = TOKEN_PATH.parent / ".env"
-    load_dotenv(env_path)
-    load_dotenv()  # local .env
-
     username = username or os.environ.get("PARRO_USERNAME", "")
     password = password or os.environ.get("PARRO_PASSWORD", "")
-    account = account or os.environ.get("PARRO_ACCOUNT", "")
+    account = account or ctx.obj["account"] or ""
 
     try:
         tokens = ParroAuth.login(
@@ -184,7 +210,7 @@ def login(username: str | None, password: str | None, store: bool, account: str 
         )
         console.print("[green]Login geslaagd![/]")
         # Show account info
-        with ParroClient(tokens["access_token"]) as client:
+        with ParroClient(tokens["access_token"], account=account or None) as client:
             me = client.get_account()
             email = me.get("email", "")
             console.print(f"  Email: {email}")
@@ -200,12 +226,14 @@ def login(username: str | None, password: str | None, store: bool, account: str 
 
 
 @cli.command()
-def logout() -> None:
-    """Uitloggen (tokens verwijderen)."""
-    from .client import TOKEN_PATH
+@click.pass_context
+def logout(ctx: click.Context) -> None:
+    """Uitloggen (tokens van het gekozen account verwijderen)."""
+    from .client import _token_path
 
-    if TOKEN_PATH.exists():
-        TOKEN_PATH.unlink()
+    token_path = _token_path(ctx.obj["account"])
+    if token_path.exists():
+        token_path.unlink()
         console.print("[green]Uitgelogd.[/]")
     else:
         console.print("[dim]Je was al uitgelogd.[/]")
@@ -216,7 +244,7 @@ def logout() -> None:
 def account(ctx: click.Context) -> None:
     """Account info tonen."""
     as_json = ctx.obj["json"]
-    with ParroClient() as client:
+    with ParroClient(account=ctx.obj["account"]) as client:
         data = client.get_account()
         if as_json:
             print(json.dumps(data, indent=2, default=str))
@@ -239,7 +267,7 @@ def account(ctx: click.Context) -> None:
 def announcements(ctx: click.Context, limit: int, group: int | None) -> None:
     """Mededelingen ophalen."""
     as_json = ctx.obj["json"]
-    with ParroClient() as client:
+    with ParroClient(account=ctx.obj["account"]) as client:
         if group:
             # Single group
             items = client.get_announcements(group_id=group, limit=limit)
@@ -254,7 +282,7 @@ def announcements(ctx: click.Context, limit: int, group: int | None) -> None:
 def chatrooms(ctx: click.Context) -> None:
     """Chatrooms tonen, gesorteerd op activiteit."""
     as_json = ctx.obj["json"]
-    with ParroClient() as client:
+    with ParroClient(account=ctx.obj["account"]) as client:
         items = client.get_chatrooms()
 
         if as_json:
@@ -292,7 +320,7 @@ def chatrooms(ctx: click.Context) -> None:
 def messages(ctx: click.Context, chatroom_id: int, limit: int) -> None:
     """Berichten in een chatroom tonen."""
     as_json = ctx.obj["json"]
-    with ParroClient() as client:
+    with ParroClient(account=ctx.obj["account"]) as client:
         items = client.get_chat_messages(chatroom_id, limit=limit)
 
         if as_json:
@@ -312,6 +340,32 @@ def messages(ctx: click.Context, chatroom_id: int, limit: int) -> None:
             text_markup = escape(text) if text else "[dim]\\[media][/dim]"
 
             console.print(f"  [dim]{created}[/] [bold]{escape(sender)}:[/] {text_markup}")
+
+
+@cli.command()
+@click.argument("chatroom_id", type=int)
+@click.argument("text", required=False)
+@click.pass_context
+def send(ctx: click.Context, chatroom_id: int, text: str | None) -> None:
+    """Bericht sturen naar een chatroom.
+
+    TEXT is de tekst van het bericht; laat weg of gebruik "-" om van stdin te lezen.
+    """
+    as_json = ctx.obj["json"]
+    if text is None or text == "-":
+        text = sys.stdin.read()
+    text = text.strip()
+    if not text:
+        console.print("[red]Leeg bericht, niets verstuurd.[/]")
+        sys.exit(1)
+
+    with ParroClient(account=ctx.obj["account"]) as client:
+        msg = client.send_chat_message(chatroom_id, text)
+
+    if as_json:
+        print(json.dumps(msg, indent=2, default=str))
+        return
+    console.print(f"[green]Verstuurd[/] [dim](bericht {_link_id(msg) or '?'})[/]")
 
 
 @click.command("open")
@@ -360,7 +414,7 @@ cli.add_command(open_attachment)
 def children(ctx: click.Context) -> None:
     """Kinderen tonen."""
     as_json = ctx.obj["json"]
-    with ParroClient() as client:
+    with ParroClient(account=ctx.obj["account"]) as client:
         items = client.get_children()
 
         if as_json:
@@ -383,7 +437,7 @@ def children(ctx: click.Context) -> None:
 def groups(ctx: click.Context) -> None:
     """Groepen tonen."""
     as_json = ctx.obj["json"]
-    with ParroClient() as client:
+    with ParroClient(account=ctx.obj["account"]) as client:
         items = client.get_groups()
 
         if as_json:
@@ -417,7 +471,7 @@ def groups(ctx: click.Context) -> None:
 def unread(ctx: click.Context) -> None:
     """Ongelezen aantallen tonen."""
     as_json = ctx.obj["json"]
-    with ParroClient() as client:
+    with ParroClient(account=ctx.obj["account"]) as client:
         items = client.get_unread_counts()
 
         if as_json:
@@ -441,7 +495,7 @@ def unread(ctx: click.Context) -> None:
 def calendar(ctx: click.Context) -> None:
     """Kalender iCal URLs tonen."""
     as_json = ctx.obj["json"]
-    with ParroClient() as client:
+    with ParroClient(account=ctx.obj["account"]) as client:
         urls = client.get_calendar_urls()
 
         if as_json:

@@ -46,6 +46,7 @@ class TestMainHelp:
             "announcements",
             "chatrooms",
             "messages",
+            "send",
             "open",
             "children",
             "groups",
@@ -217,6 +218,74 @@ class TestMessagesCommand:
             result = runner.invoke(cli, ["messages", "123"])
         assert result.exit_code == 0
         assert "[media]" in result.output
+
+
+class TestSendCommand:
+    def test_help(self):
+        result = runner.invoke(cli, ["send", "--help"])
+        assert result.exit_code == 0
+        assert "CHATROOM_ID" in result.output
+
+    def test_sends_text_argument(self):
+        with patch("parro.cli.ParroClient") as mock_cls:
+            client = mock_cls.return_value.__enter__.return_value
+            client.send_chat_message.return_value = {"links": [{"rel": "self", "id": 7}]}
+            result = runner.invoke(cli, ["send", "123", "Kira is ziek vandaag"])
+        assert result.exit_code == 0, result.output
+        client.send_chat_message.assert_called_once_with(123, "Kira is ziek vandaag")
+        assert "Verstuurd" in result.output
+
+    def test_reads_text_from_stdin(self):
+        with patch("parro.cli.ParroClient") as mock_cls:
+            client = mock_cls.return_value.__enter__.return_value
+            client.send_chat_message.return_value = {}
+            result = runner.invoke(cli, ["send", "123", "-"], input="Regel 1\nRegel 2\n")
+        assert result.exit_code == 0, result.output
+        client.send_chat_message.assert_called_once_with(123, "Regel 1\nRegel 2")
+
+    def test_empty_message_is_refused(self):
+        with patch("parro.cli.ParroClient") as mock_cls:
+            result = runner.invoke(cli, ["send", "123"], input="  \n")
+        assert result.exit_code != 0
+        mock_cls.return_value.__enter__.return_value.send_chat_message.assert_not_called()
+
+
+class TestAccountOption:
+    def test_global_account_selects_tokens(self):
+        with patch("parro.cli.ParroClient") as mock_cls:
+            mock_cls.return_value.__enter__.return_value.get_chatrooms.return_value = []
+            result = runner.invoke(cli, ["--account", "Kindercampus", "chatrooms"])
+        assert result.exit_code == 0, result.output
+        mock_cls.assert_called_once_with(account="Kindercampus")
+
+    def test_account_from_env(self):
+        with patch("parro.cli.ParroClient") as mock_cls:
+            mock_cls.return_value.__enter__.return_value.get_chatrooms.return_value = []
+            result = runner.invoke(cli, ["chatrooms"], env={"PARRO_ACCOUNT": "Troelstra"})
+        assert result.exit_code == 0, result.output
+        mock_cls.assert_called_once_with(account="Troelstra")
+
+    def test_login_uses_global_account(self):
+        with (
+            patch("parro.cli.ParroAuth.login", return_value={"access_token": "t"}) as login,
+            patch("parro.cli.ParroClient"),
+        ):
+            result = runner.invoke(
+                cli, ["--account", "Kindercampus", "login", "-u", "u@x.nl", "-p", "pw"]
+            )
+        assert result.exit_code == 0, result.output
+        assert login.call_args.kwargs["account"] == "Kindercampus"
+
+    def test_logout_removes_only_that_account(self, tmp_path):
+        default = tmp_path / "tokens.json"
+        named = tmp_path / "tokens-kindercampus.json"
+        default.write_text("{}")
+        named.write_text("{}")
+        with patch("parro.client.TOKEN_PATH", default):
+            result = runner.invoke(cli, ["--account", "Kindercampus", "logout"])
+        assert result.exit_code == 0, result.output
+        assert not named.exists()
+        assert default.exists()
 
 
 class TestOpenCommand:

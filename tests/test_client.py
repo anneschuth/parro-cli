@@ -10,7 +10,14 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from parro.client import ParroClient, _generate_pkce, _load_tokens, _save_tokens
+from parro.client import (
+    ParroAuth,
+    ParroClient,
+    _generate_pkce,
+    _load_tokens,
+    _save_tokens,
+    _token_path,
+)
 
 
 class TestGeneratePkce:
@@ -87,6 +94,58 @@ class TestSaveLoadTokens:
         # File should be readable only by owner (0o600)
         mode = token_file.stat().st_mode & 0o777
         assert mode == 0o600
+
+
+class TestPerAccountTokens:
+    def test_default_path_without_account(self, tmp_path):
+        token_file = tmp_path / "tokens.json"
+        with patch("parro.client.TOKEN_PATH", token_file):
+            assert _token_path() == token_file
+            assert _token_path("") == token_file
+
+    def test_account_gets_own_file(self, tmp_path):
+        with patch("parro.client.TOKEN_PATH", tmp_path / "tokens.json"):
+            expected = tmp_path / "tokens-kindercampus-zuidas.json"
+            assert _token_path("Kindercampus Zuidas") == expected
+            assert _token_path("  De Regenboog! ") == tmp_path / "tokens-de-regenboog.json"
+
+    def test_accounts_do_not_overwrite_each_other(self, tmp_path):
+        with patch("parro.client.TOKEN_PATH", tmp_path / "tokens.json"):
+            _save_tokens({"access_token": "A"}, "school a")
+            _save_tokens({"access_token": "B"}, "school b")
+            assert _load_tokens("school a") == {"access_token": "A"}
+            assert _load_tokens("school b") == {"access_token": "B"}
+            assert _load_tokens() is None
+
+    def test_client_loads_token_of_its_account(self):
+        with (
+            patch("parro.client.ParroAuth.get_token", return_value="tok") as get_token,
+            ParroClient(account="school a"),
+        ):
+            pass
+        get_token.assert_called_once_with("school a")
+
+    def test_not_authenticated_names_the_account(self):
+        with (
+            patch("parro.client.ParroAuth.get_token", return_value=None),
+            pytest.raises(RuntimeError, match="parro login --account school a"),
+            ParroClient(account="school a"),
+        ):
+            pass
+
+    def test_refresh_saves_to_account_file(self, tmp_path):
+        resp = httpx.Response(
+            200,
+            json={"access_token": "NEW", "refresh_token": "RT2"},
+            request=httpx.Request("POST", "https://idp.test/token"),
+        )
+        with (
+            patch("parro.client.TOKEN_PATH", tmp_path / "tokens.json"),
+            patch("parro.client.httpx.post", return_value=resp),
+        ):
+            ParroAuth.refresh("RT", "school a")
+            assert _load_tokens("school a") == {"access_token": "NEW", "refresh_token": "RT2"}
+            assert _load_tokens() is None
 
 
 class TestGetAllAnnouncements:
@@ -242,3 +301,36 @@ class TestGetAnnouncementsPaged:
         items = self._make_client(state).get_announcements(group_id=7)
         assert len(items) == 100
         assert len(state["params"]) == 1
+
+
+class TestSendChatMessage:
+    def _make_client(self, state: dict) -> ParroClient:
+        def handler(request: httpx.Request) -> httpx.Response:
+            state["method"] = request.method
+            state["path"] = request.url.path
+            state["body"] = json.loads(request.content)
+            created = {**state["body"]["items"][0], "links": [{"rel": "self", "id": 99}]}
+            return httpx.Response(201, json={"items": [created]})
+
+        client = ParroClient.__new__(ParroClient)
+        client.token = "token"
+        client._client = httpx.Client(
+            base_url="https://rest.test", transport=httpx.MockTransport(handler)
+        )
+        return client
+
+    def test_posts_text_message(self):
+        state: dict = {}
+        msg = self._make_client(state).send_chat_message(42, "Hallo juf!")
+        assert state["method"] == "POST"
+        assert state["path"].endswith("/chatroom/42/chatmessage")
+        assert state["body"] == {
+            "items": [{"dtype": "chat.RChatTextMessage", "text": "Hallo juf!"}]
+        }
+        assert msg["links"][0]["id"] == 99
+
+    def test_empty_text_is_not_sent(self):
+        state: dict = {}
+        with pytest.raises(ValueError):
+            self._make_client(state).send_chat_message(42, "   ")
+        assert state == {}

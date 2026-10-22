@@ -42,16 +42,31 @@ def _generate_pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
-def _save_tokens(data: dict[str, str]) -> None:
-    TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-    TOKEN_PATH.write_text(json.dumps(data, indent=2))
-    TOKEN_PATH.chmod(0o600)
+def _token_path(account: str | None = None) -> Path:
+    """Token file for *account*; ``None`` means the default ``tokens.json``.
+
+    Every account on the chooser (typically one per school) gets its own
+    file, so logging in to one doesn't log out the others. They can't share
+    a file anyway: ParnaSys rotates the refresh token on every refresh.
+    """
+    if not account:
+        return TOKEN_PATH
+    slug = re.sub(r"[^a-z0-9]+", "-", account.lower()).strip("-") or "account"
+    return TOKEN_PATH.with_name(f"tokens-{slug}.json")
 
 
-def _load_tokens() -> dict[str, str] | None:
-    if TOKEN_PATH.exists():
+def _save_tokens(data: dict[str, str], account: str | None = None) -> None:
+    path = _token_path(account)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2))
+    path.chmod(0o600)
+
+
+def _load_tokens(account: str | None = None) -> dict[str, str] | None:
+    path = _token_path(account)
+    if path.exists():
         try:
-            return json.loads(TOKEN_PATH.read_text())
+            return json.loads(path.read_text())
         except (json.JSONDecodeError, OSError):
             pass
     return None
@@ -174,11 +189,13 @@ class ParroAuth:
         1. Starting the OAuth authorize request
         2. Posting credentials to the IDP login form
         3. Picking an identity if the IDP shows an account chooser
-           (*account* = substring of the shown name; default: first entry)
+           (*account* = substring of the shown name or school; default:
+           first entry)
         4. Following redirects until we get the auth code
         5. Exchanging the code for tokens
 
-        No browser needed.
+        Tokens are stored per *account* (see ``_token_path``). No browser
+        needed.
         """
         if not username:
             username = input("Parro email: ")
@@ -319,7 +336,7 @@ class ParroAuth:
                         tokens = token_resp.json()
                         if "access_token" not in tokens:
                             raise RuntimeError(f"Token exchange mislukt: {tokens}")
-                        _save_tokens(tokens)
+                        _save_tokens(tokens, account)
                         return tokens
 
                     if "error" in qs:
@@ -338,7 +355,7 @@ class ParroAuth:
             )
 
     @staticmethod
-    def refresh(refresh_token: str) -> dict[str, str]:
+    def refresh(refresh_token: str, account: str | None = None) -> dict[str, str]:
         """Refresh the access token."""
         resp = httpx.post(
             TOKEN_URL,
@@ -352,13 +369,13 @@ class ParroAuth:
         resp.raise_for_status()
         tokens = resp.json()
         if "access_token" in tokens:
-            _save_tokens(tokens)
+            _save_tokens(tokens, account)
         return tokens
 
     @staticmethod
-    def get_token() -> str | None:
-        """Get a valid access token, refreshing if needed."""
-        tokens = _load_tokens()
+    def get_token(account: str | None = None) -> str | None:
+        """Get a valid access token for *account*, refreshing if needed."""
+        tokens = _load_tokens(account)
         if not tokens:
             return None
 
@@ -378,7 +395,7 @@ class ParroAuth:
         refresh_token = tokens.get("refresh_token", "")
         if refresh_token:
             try:
-                new_tokens = ParroAuth.refresh(refresh_token)
+                new_tokens = ParroAuth.refresh(refresh_token, account)
                 return new_tokens.get("access_token")
             except Exception:
                 pass
@@ -389,14 +406,21 @@ class ParroAuth:
 class ParroClient:
     """Synchronous Parro API client using the real REST v2 API."""
 
-    def __init__(self, token: str | None = None):
+    def __init__(self, token: str | None = None, account: str | None = None):
+        """*account* selects the stored tokens of that account (see ``ParroAuth.login``)."""
         self.token = token
+        self.account = account
         self._client: httpx.Client | None = None
 
     def __enter__(self) -> ParroClient:
         if not self.token:
-            self.token = ParroAuth.get_token()
+            self.token = ParroAuth.get_token(self.account)
         if not self.token:
+            if self.account:
+                raise RuntimeError(
+                    f"Not authenticated for account '{self.account}'. "
+                    f"Run `parro login --account {self.account}` first."
+                )
             raise RuntimeError("Not authenticated. Run `parro login` first.")
         self._client = httpx.Client(
             base_url=REST_API,
@@ -505,6 +529,23 @@ class ParroClient:
         if limit is None:
             return self._items(path)
         return self._items_paged(path, limit)
+
+    def send_chat_message(self, chatroom_id: int, text: str) -> dict[str, Any]:
+        """Post a plain-text message to a chatroom; returns the created message.
+
+        Only rooms where the school allows replies accept it (the chatroom's
+        ``repliesEnabled``); otherwise the API answers with an HTTP error.
+        """
+        if not text.strip():
+            raise ValueError("Message text is empty.")
+        assert self._client is not None
+        resp = self._client.post(
+            f"/chatroom/{chatroom_id}/chatmessage",
+            json={"items": [{"dtype": "chat.RChatTextMessage", "text": text}]},
+        )
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
+        return items[0] if items else {}
 
     def get_calendar_urls(self) -> list[str]:
         data = self._get("/calendar/sync")

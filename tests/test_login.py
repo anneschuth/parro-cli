@@ -142,6 +142,7 @@ def _run_login(state: dict, with_chooser: bool = True, **kwargs) -> dict[str, st
     ):
         tokens = ParroAuth.login(username="jan@example.nl", password="geheim", **kwargs)
     state["saved"] = save.call_args.args[0] if save.call_args else None
+    state["saved_account"] = save.call_args.args[1] if save.call_args else None
     return tokens
 
 
@@ -185,3 +186,13 @@ class TestLoginFlow:
         state: dict = {}
         _run_login(state)
         json.dumps(state["saved"])
+
+    def test_tokens_saved_under_chosen_account(self):
+        state: dict = {}
+        _run_login(state, account="piet")
+        assert state["saved_account"] == "piet"
+
+    def test_tokens_saved_to_default_without_account(self):
+        state: dict = {}
+        _run_login(state)
+        assert state["saved_account"] is None
