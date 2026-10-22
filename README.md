@@ -78,6 +78,7 @@ parro unread
 | `parro login` | Inloggen via headless OAuth2 |
 | `parro logout` | Tokens verwijderen |
 | `parro account` | Account info tonen |
+| `parro accounts` | Accounts (scholen) van je login tonen |
 | `parro announcements` | Mededelingen ophalen (`--limit N`, `--group ID`) |
 | `parro chatrooms` | Chatrooms tonen, gesorteerd op activiteit |
 | `parro messages <id>` | Berichten in een chatroom (`--limit N`) |
@@ -131,6 +132,8 @@ gekozen; kies zelf met:
 parro login --account "Jan"          # deel van de getoonde naam (of rol/school)
 export PARRO_ACCOUNT=Jan             # of via env
 ```
+
+Welke accounts je login heeft, zie je met `parro accounts`.
 
 Elk account krijgt zijn eigen tokens, dus je kunt met meerdere scholen tegelijk
 ingelogd zijn. Geef bij elk commando aan welk account je bedoelt:

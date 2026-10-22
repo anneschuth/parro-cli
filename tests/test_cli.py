@@ -43,6 +43,7 @@ class TestMainHelp:
             "login",
             "logout",
             "account",
+            "accounts",
             "announcements",
             "chatrooms",
             "messages",
@@ -267,6 +268,16 @@ class TestSendCommand:
             result = runner.invoke(cli, ["send", "123"], input="  \n")
         assert result.exit_code != 0
         mock_cls.return_value.__enter__.return_value.send_chat_message.assert_not_called()
+
+
+class TestAccountsCommand:
+    def test_lists_accounts(self):
+        accounts = [{"name": "Jan", "role": "Verzorger bij De Regenboog"}]
+        with patch("parro.cli.ParroAuth.list_accounts", return_value=accounts) as list_accounts:
+            result = runner.invoke(cli, ["accounts", "-u", "jan@x.nl", "-p", "pw"])
+        assert result.exit_code == 0, result.output
+        list_accounts.assert_called_once_with("jan@x.nl", "pw")
+        assert "De Regenboog" in result.output
 
 
 class TestAccountOption:

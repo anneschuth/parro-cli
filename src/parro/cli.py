@@ -11,6 +11,7 @@ Usage:
     parro unread                         # Show unread counts
     parro calendar                       # Show calendar iCal URLs
     parro account                        # Show account info
+    parro accounts                       # List the accounts (schools) of a login
     parro open REF                       # Open attachment by number or URL
     parro completion SHELL               # Output shell completion script
 
@@ -258,6 +259,30 @@ def account(ctx: click.Context) -> None:
                 border_style="blue",
             )
         )
+
+
+@cli.command()
+@click.option("-u", "--username", default=None, help="Email (of PARRO_USERNAME env)")
+@click.option("-p", "--password", default=None, help="Wachtwoord (of PARRO_PASSWORD env)")
+@click.pass_context
+def accounts(ctx: click.Context, username: str | None, password: str | None) -> None:
+    """Accounts (scholen) van je login tonen, voor --account."""
+    import getpass
+    import os
+
+    username = username or os.environ.get("PARRO_USERNAME") or input("Parro email: ")
+    password = (
+        password or os.environ.get("PARRO_PASSWORD") or getpass.getpass("Parro wachtwoord: ")
+    )
+    items = ParroAuth.list_accounts(username, password)
+    if ctx.obj["json"]:
+        print(json.dumps(items, indent=2))
+        return
+    if not items:
+        console.print("[dim]Eén account op deze login, --account is niet nodig.[/]")
+        return
+    for a in items:
+        console.print(f"  [bold]{escape(a['name'])}[/] [dim]{escape(a['role'])}[/]")
 
 
 @cli.command()

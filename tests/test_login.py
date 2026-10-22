@@ -196,3 +196,30 @@ class TestLoginFlow:
         state: dict = {}
         _run_login(state)
         assert state["saved_account"] is None
+
+
+def _run_list_accounts(state: dict, with_chooser: bool = True) -> list[dict[str, str]]:
+    transport = _make_transport(state, with_chooser)
+    real_client = httpx.Client
+    with patch(
+        "parro.client.httpx.Client",
+        side_effect=lambda **kw: real_client(transport=transport, **kw),
+    ):
+        return ParroAuth.list_accounts("jan@example.nl", "geheim")
+
+
+class TestListAccounts:
+    def test_lists_chooser_entries_without_logging_in(self):
+        state: dict = {}
+        accounts = _run_list_accounts(state)
+        assert accounts == [
+            {"name": "Jan Jansen", "role": "Verzorger bij De Regenboog"},
+            {"name": "Piet Pietersen", "role": "Verzorger bij De Regenboog"},
+        ]
+        assert "ajax_url" not in state  # nothing was chosen
+        assert "token_form" not in state  # no tokens requested
+
+    def test_single_identity_gives_empty_list(self):
+        state: dict = {}
+        assert _run_list_accounts(state, with_chooser=False) == []
+        assert "token_form" not in state
