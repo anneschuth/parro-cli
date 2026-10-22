@@ -22,7 +22,8 @@ def identity_name(identity: dict) -> str:
     """
     name = identity.get("displayName", "")
     if not name:
-        first = identity.get("firstName", "")
+        # The REST API spells it ``firstname``; ``firstName`` is kept for safety
+        first = identity.get("firstname") or identity.get("firstName", "")
         prefix = identity.get("surnamePrefix", "")
         last = identity.get("surname", "")
         parts = [first, prefix, last] if prefix else [first, last]

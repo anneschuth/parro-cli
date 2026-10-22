@@ -42,16 +42,31 @@ def _generate_pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
-def _save_tokens(data: dict[str, str]) -> None:
-    TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-    TOKEN_PATH.write_text(json.dumps(data, indent=2))
-    TOKEN_PATH.chmod(0o600)
+def _token_path(account: str | None = None) -> Path:
+    """Token file for *account*; ``None`` means the default ``tokens.json``.
+
+    Every account on the chooser (typically one per school) gets its own
+    file, so logging in to one doesn't log out the others. They can't share
+    a file anyway: ParnaSys rotates the refresh token on every refresh.
+    """
+    if not account:
+        return TOKEN_PATH
+    slug = re.sub(r"[\W_]+", "-", account.lower()).strip("-") or "account"
+    return TOKEN_PATH.with_name(f"tokens-{slug}.json")
 
 
-def _load_tokens() -> dict[str, str] | None:
-    if TOKEN_PATH.exists():
+def _save_tokens(data: dict[str, str], account: str | None = None) -> None:
+    path = _token_path(account)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2))
+    path.chmod(0o600)
+
+
+def _load_tokens(account: str | None = None) -> dict[str, str] | None:
+    path = _token_path(account)
+    if path.exists():
         try:
-            return json.loads(TOKEN_PATH.read_text())
+            return json.loads(path.read_text())
         except (json.JSONDecodeError, OSError):
             pass
     return None
@@ -159,6 +174,77 @@ def _choose_account(client: httpx.Client, page_url: str, html: str, account: str
     return location
 
 
+def _submit_credentials(
+    client: httpx.Client, auth_params: dict[str, str], username: str, password: str
+) -> httpx.Response:
+    """Steps 1–3 of the login: authorize, find the IDP form, post the credentials.
+
+    Returns the IDP's response to the credential POST (a redirect, or the
+    account chooser for logins with several identities).
+    """
+    # Step 1: Hit the authorize endpoint — get redirected to login page
+    resp = client.get(AUTHORIZE_URL, params=auth_params)
+
+    # Follow redirects manually (to collect cookies)
+    while resp.status_code in (301, 302, 303, 307, 308):
+        location = resp.headers["location"]
+        if not location.startswith("http"):
+            location = f"{IDP_BASE}{location}"
+        resp = client.get(location)
+
+    # Step 2: We should now be on the login page.
+    # Find the login form action URL and any hidden fields.
+    html = resp.text
+    action_match = re.search(r'<form[^>]*action="([^"]*)"', html, re.IGNORECASE)
+    if not action_match:
+        raise RuntimeError(
+            "Kon het login formulier niet vinden. Mogelijk is de IDP interface veranderd."
+        )
+
+    form_action = action_match.group(1).replace("&amp;", "&")
+    if form_action.startswith("./"):
+        # Relative to current page path
+        base_path = str(resp.url).split("?")[0]
+        if not base_path.endswith("/"):
+            base_path = base_path.rsplit("/", 1)[0] + "/"
+        form_action = base_path + form_action[2:]
+    elif not form_action.startswith("http"):
+        form_action = f"{IDP_BASE}{form_action}"
+
+    # Extract hidden form fields
+    form_data = {}
+    for match in re.finditer(
+        r'<input[^>]*type="hidden"[^>]*name="([^"]*)"[^>]*value="([^"]*)"',
+        html,
+        re.IGNORECASE,
+    ):
+        form_data[match.group(1)] = match.group(2)
+
+    # Also check reverse order (value before name)
+    for match in re.finditer(
+        r'<input[^>]*value="([^"]*)"[^>]*type="hidden"[^>]*name="([^"]*)"',
+        html,
+        re.IGNORECASE,
+    ):
+        form_data[match.group(2)] = match.group(1)
+
+    # Add credentials — field names are read from the form because
+    # ParnaSys has renamed them before (e-mailadres → emailadres)
+    user_field, pass_field = _login_field_names(html)
+    form_data[user_field] = username
+    form_data[pass_field] = password
+    # Wicket requires the submit button name to be present
+    form_data["aanmelden"] = "x"
+
+    # Step 3: Submit the login form
+    resp = client.post(
+        form_action,
+        data=form_data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    return resp
+
+
 class ParroAuth:
     """Handle OAuth2 authentication for Parro."""
 
@@ -174,11 +260,13 @@ class ParroAuth:
         1. Starting the OAuth authorize request
         2. Posting credentials to the IDP login form
         3. Picking an identity if the IDP shows an account chooser
-           (*account* = substring of the shown name; default: first entry)
+           (*account* = substring of the shown name or school; default:
+           first entry)
         4. Following redirects until we get the auth code
         5. Exchanging the code for tokens
 
-        No browser needed.
+        Tokens are stored per *account* (see ``_token_path``). No browser
+        needed.
         """
         if not username:
             username = input("Parro email: ")
@@ -203,66 +291,7 @@ class ParroAuth:
             timeout=30,
             headers={"User-Agent": "Mozilla/5.0 (Macintosh) Parro-CLI/0.1"},
         ) as client:
-            # Step 1: Hit the authorize endpoint — get redirected to login page
-            resp = client.get(AUTHORIZE_URL, params=auth_params)
-
-            # Follow redirects manually (to collect cookies)
-            while resp.status_code in (301, 302, 303, 307, 308):
-                location = resp.headers["location"]
-                if not location.startswith("http"):
-                    location = f"{IDP_BASE}{location}"
-                resp = client.get(location)
-
-            # Step 2: We should now be on the login page.
-            # Find the login form action URL and any hidden fields.
-            html = resp.text
-            action_match = re.search(r'<form[^>]*action="([^"]*)"', html, re.IGNORECASE)
-            if not action_match:
-                raise RuntimeError(
-                    "Kon het login formulier niet vinden. Mogelijk is de IDP interface veranderd."
-                )
-
-            form_action = action_match.group(1).replace("&amp;", "&")
-            if form_action.startswith("./"):
-                # Relative to current page path
-                base_path = str(resp.url).split("?")[0]
-                if not base_path.endswith("/"):
-                    base_path = base_path.rsplit("/", 1)[0] + "/"
-                form_action = base_path + form_action[2:]
-            elif not form_action.startswith("http"):
-                form_action = f"{IDP_BASE}{form_action}"
-
-            # Extract hidden form fields
-            form_data = {}
-            for match in re.finditer(
-                r'<input[^>]*type="hidden"[^>]*name="([^"]*)"[^>]*value="([^"]*)"',
-                html,
-                re.IGNORECASE,
-            ):
-                form_data[match.group(1)] = match.group(2)
-
-            # Also check reverse order (value before name)
-            for match in re.finditer(
-                r'<input[^>]*value="([^"]*)"[^>]*type="hidden"[^>]*name="([^"]*)"',
-                html,
-                re.IGNORECASE,
-            ):
-                form_data[match.group(2)] = match.group(1)
-
-            # Add credentials — field names are read from the form because
-            # ParnaSys has renamed them before (e-mailadres → emailadres)
-            user_field, pass_field = _login_field_names(html)
-            form_data[user_field] = username
-            form_data[pass_field] = password
-            # Wicket requires the submit button name to be present
-            form_data["aanmelden"] = "x"
-
-            # Step 3: Submit the login form
-            resp = client.post(
-                form_action,
-                data=form_data,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
+            resp = _submit_credentials(client, auth_params, username, password)
 
             # Step 4: Follow redirects until we hit parro://oauth2?code=...
             max_redirects = 20
@@ -319,7 +348,7 @@ class ParroAuth:
                         tokens = token_resp.json()
                         if "access_token" not in tokens:
                             raise RuntimeError(f"Token exchange mislukt: {tokens}")
-                        _save_tokens(tokens)
+                        _save_tokens(tokens, account)
                         return tokens
 
                     if "error" in qs:
@@ -338,7 +367,45 @@ class ParroAuth:
             )
 
     @staticmethod
-    def refresh(refresh_token: str) -> dict[str, str]:
+    def list_accounts(username: str, password: str) -> list[dict[str, str]]:
+        """List the identities a login can choose from, without logging in.
+
+        Returns ``[{"name", "role"}]`` in chooser order — the role carries
+        the school ("Verzorger bij De Regenboog"); pass a substring of either
+        as *account* to ``login``. An empty list means the login has a single
+        identity (no chooser).
+        """
+        _, challenge = _generate_pkce()
+        auth_params = {
+            "client_id": CLIENT_ID,
+            "redirect_uri": REDIRECT_URI,
+            "response_type": "code",
+            "scope": "openid",
+            "state": secrets.token_urlsafe(32),
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+        }
+        with httpx.Client(
+            follow_redirects=False,
+            timeout=30,
+            headers={"User-Agent": "Mozilla/5.0 (Macintosh) Parro-CLI/0.1"},
+        ) as client:
+            resp = _submit_credentials(client, auth_params, username, password)
+            for _ in range(20):
+                location = resp.headers.get("location", "")
+                if resp.status_code not in (301, 302, 303, 307, 308):
+                    break
+                if location.startswith("parro://"):
+                    return []  # straight to the auth code: a single identity
+                resp = client.get(urllib.parse.urljoin(str(resp.url), location))
+            if "accountKeuze" not in resp.text:
+                raise RuntimeError("Login mislukt: onjuist wachtwoord of gebruikersnaam.")
+            return [
+                {"name": a["name"], "role": a["role"]} for a in _parse_account_chooser(resp.text)
+            ]
+
+    @staticmethod
+    def refresh(refresh_token: str, account: str | None = None) -> dict[str, str]:
         """Refresh the access token."""
         resp = httpx.post(
             TOKEN_URL,
@@ -352,13 +419,13 @@ class ParroAuth:
         resp.raise_for_status()
         tokens = resp.json()
         if "access_token" in tokens:
-            _save_tokens(tokens)
+            _save_tokens(tokens, account)
         return tokens
 
     @staticmethod
-    def get_token() -> str | None:
-        """Get a valid access token, refreshing if needed."""
-        tokens = _load_tokens()
+    def get_token(account: str | None = None) -> str | None:
+        """Get a valid access token for *account*, refreshing if needed."""
+        tokens = _load_tokens(account)
         if not tokens:
             return None
 
@@ -378,7 +445,7 @@ class ParroAuth:
         refresh_token = tokens.get("refresh_token", "")
         if refresh_token:
             try:
-                new_tokens = ParroAuth.refresh(refresh_token)
+                new_tokens = ParroAuth.refresh(refresh_token, account)
                 return new_tokens.get("access_token")
             except Exception:
                 pass
@@ -389,14 +456,21 @@ class ParroAuth:
 class ParroClient:
     """Synchronous Parro API client using the real REST v2 API."""
 
-    def __init__(self, token: str | None = None):
+    def __init__(self, token: str | None = None, account: str | None = None):
+        """*account* selects the stored tokens of that account (see ``ParroAuth.login``)."""
         self.token = token
+        self.account = account
         self._client: httpx.Client | None = None
 
     def __enter__(self) -> ParroClient:
         if not self.token:
-            self.token = ParroAuth.get_token()
+            self.token = ParroAuth.get_token(self.account)
         if not self.token:
+            if self.account:
+                raise RuntimeError(
+                    f"Not authenticated for account '{self.account}'. "
+                    f"Run `parro login --account {self.account}` first."
+                )
             raise RuntimeError("Not authenticated. Run `parro login` first.")
         self._client = httpx.Client(
             base_url=REST_API,
@@ -505,6 +579,23 @@ class ParroClient:
         if limit is None:
             return self._items(path)
         return self._items_paged(path, limit)
+
+    def send_chat_message(self, chatroom_id: int, text: str) -> dict[str, Any]:
+        """Post a plain-text message to a chatroom; returns the created message.
+
+        Only rooms where the school allows replies accept it (the chatroom's
+        ``repliesEnabled``); otherwise the API answers with an HTTP error.
+        """
+        if not text.strip():
+            raise ValueError("Message text is empty.")
+        assert self._client is not None
+        resp = self._client.post(
+            f"/chatroom/{chatroom_id}/chatmessage",
+            json={"items": [{"dtype": "chat.RChatTextMessage", "text": text}]},
+        )
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
+        return items[0] if items else {}
 
     def get_calendar_urls(self) -> list[str]:
         data = self._get("/calendar/sync")
