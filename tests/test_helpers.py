@@ -51,3 +51,10 @@ class TestLinkId:
     def test_no_matching_rel(self):
         item = {"links": [{"rel": "other", "id": 1}]}
         assert link_id(item) is None
+
+
+def test_identity_name_lowercase_firstname_from_api():
+    # What /chatroom/<id>/chatmessage and /child actually return
+    assert identity_name({"firstname": "Sanne", "surname": "van Willenswaard"}) == (
+        "Sanne van Willenswaard"
+    )
